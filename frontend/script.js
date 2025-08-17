@@ -18,6 +18,8 @@ let stream;
 let silenceTimeout;
 let isRecording = false;
 let listeningPaused = false;
+let ws = null;
+const WS_URL = "ws://127.0.0.1:8000/ws/audio"; 
 
 const SILENCE_THRESHOLD = 0.02;
 const SILENCE_DELAY = 1500;
@@ -117,87 +119,175 @@ async function initStream() {
   }
 }
 
+// 🔹 Helpers for WebSocket
+function isWsOpen() {
+  return ws && ws.readyState === WebSocket.OPEN;
+}
+
+async function ensureWebSocket() {
+  if (isWsOpen()) return;
+
+  // If already connecting, wait for it
+  if (ws && ws.readyState === WebSocket.CONNECTING) {
+    await new Promise((res) => ws.addEventListener("open", res, { once: true }));
+    return;
+  }
+
+  ws = new WebSocket(WS_URL);
+  ws.binaryType = "arraybuffer";
+
+  ws.onopen = () => console.log("✅ WS connected");
+  ws.onclose = (e) => console.log("❌ WS closed", e.code, e.reason || "");
+  ws.onerror = (err) => console.error("⚠️ WS error", err);
+  ws.onmessage = (evt) => {
+    // For this task, server likely just echoes/acks. Log it for visibility.
+    try {
+      console.log("WS msg:", evt.data);
+    } catch (_) {}
+  };
+
+  await new Promise((res) => ws.addEventListener("open", res, { once: true }));
+}
+
+//before websocket
+// // Start recording
+// async function startRecording() {
+//   await initStream();
+//   if (isRecording) return;
+
+//   mediaRecorder = new MediaRecorder(stream);
+//   audioChunks = [];
+//   isRecording = true;
+//   updateState("listening");
+
+//   mediaRecorder.ondataavailable = e => {
+//     if (e.data.size > 0) audioChunks.push(e.data);
+//   };
+
+// mediaRecorder.onstop = async () => {
+//   isRecording = false;
+//   if (audioChunks.length === 0) return;
+
+//   const audioBlob = new Blob(audioChunks, { type: "audio/webm" });
+//   audioChunks = [];
+
+//   // Set thinking state while waiting for AI response
+//   updateState("thinking");
+
+//   const formData = new FormData();
+//   formData.append("audio", audioBlob, "recording.webm");
+
+//   try {
+//     const res = await fetch(`/agent/chat/${sessionId}`, { method: "POST", body: formData });
+//     const data = await res.json();
+//     if (data.session_id) sessionId = data.session_id;
+
+//     addChatMessage("You", data.transcript);
+//     addChatMessage("AI", data.llm_response);
+
+//     // --- Sequential Audio Playback ---
+//     if (data.audio_urls && data.audio_urls.length > 0) {
+//       updateState("speaking");
+
+//       let index = 0;
+
+//       const playNext = () => {
+//         if (index < data.audio_urls.length) {
+//           const audio = new Audio(data.audio_urls[index]);
+//           index++;
+//           audio.play();
+//           audio.onended = playNext;
+//         } else {
+//           updateState("listening");
+//           startRecording();
+//         }
+//       };
+
+//       playNext();
+//     } else {
+//       // Ensure thinking GIF is visible briefly
+//       setTimeout(() => {
+//         updateState("listening");
+//         startRecording();
+//       }, 200);
+//     }
+
+//   } catch (err) {
+//     console.error(err);
+//     setTimeout(() => {
+//       updateState("listening");
+//       startRecording();
+//     }, 200);
+//   }
+// };
+
+
+//   mediaRecorder.start();
+//   drawWaveform();
+// }
+
+// // Stop recording manually
+// async function stopRecording(resetStream = true) {
+//   if (mediaRecorder && mediaRecorder.state !== "inactive") {
+//     mediaRecorder.stop();
+//     isRecording = false;
+//   }
+
+//   if (resetStream && stream) {
+//     stream.getTracks().forEach(track => track.stop());
+//     stream = null;
+//     audioContext = null;
+//     analyser = null;
+//     source = null;
+//   }
+// }
+
+
 // Start recording
 async function startRecording() {
   await initStream();
   if (isRecording) return;
 
-  mediaRecorder = new MediaRecorder(stream);
-  audioChunks = [];
+  // 🔹 Ensure WS is connected (kept open during silence pauses)
+  await ensureWebSocket();
+
+  // 🔹 Use MediaRecorder to capture & stream chunks over WS
+  mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
+  audioChunks = []; // not used in streaming mode, but keep cleared
+
   isRecording = true;
   updateState("listening");
 
-  mediaRecorder.ondataavailable = e => {
-    if (e.data.size > 0) audioChunks.push(e.data);
+
+  // --- NEW: stream chunks to server over WS ---
+  mediaRecorder.ondataavailable = async (e) => {
+    if (e.data.size > 0 && isWsOpen()) {
+      const buf = await e.data.arrayBuffer();
+      ws.send(buf); // send binary chunk
+    }
   };
 
-mediaRecorder.onstop = async () => {
-  isRecording = false;
-  if (audioChunks.length === 0) return;
 
-  const audioBlob = new Blob(audioChunks, { type: "audio/webm" });
-  audioChunks = [];
+  // 🔹 Stream ~every 500ms
+  
+  mediaRecorder.start(500); // NEW: timeslice to emit chunks regularly
 
-  // Set thinking state while waiting for AI response
-  updateState("thinking");
-
-  const formData = new FormData();
-  formData.append("audio", audioBlob, "recording.webm");
-
-  try {
-    const res = await fetch(`/agent/chat/${sessionId}`, { method: "POST", body: formData });
-    const data = await res.json();
-    if (data.session_id) sessionId = data.session_id;
-
-    addChatMessage("You", data.transcript);
-    addChatMessage("AI", data.llm_response);
-
-    // --- Sequential Audio Playback ---
-    if (data.audio_urls && data.audio_urls.length > 0) {
-      updateState("speaking");
-
-      let index = 0;
-
-      const playNext = () => {
-        if (index < data.audio_urls.length) {
-          const audio = new Audio(data.audio_urls[index]);
-          index++;
-          audio.play();
-          audio.onended = playNext;
-        } else {
-          updateState("listening");
-          startRecording();
-        }
-      };
-
-      playNext();
-    } else {
-      // Ensure thinking GIF is visible briefly
-      setTimeout(() => {
-        updateState("listening");
-        startRecording();
-      }, 200);
-    }
-
-  } catch (err) {
-    console.error(err);
-    setTimeout(() => {
-      updateState("listening");
-      startRecording();
-    }, 200);
-  }
-};
-
-
-  mediaRecorder.start();
   drawWaveform();
 }
 
 // Stop recording manually
 async function stopRecording(resetStream = true) {
+  // Stop recorder if active
   if (mediaRecorder && mediaRecorder.state !== "inactive") {
     mediaRecorder.stop();
     isRecording = false;
+  }
+
+  // 🔹 When fully stopping (user pressed Stop), tell server we're done and close WS
+  if (resetStream && isWsOpen()) {
+    try { ws.send("END"); } catch (_) {}
+    try { ws.close(); } catch (_) {}
+    ws = null;
   }
 
   if (resetStream && stream) {
@@ -208,6 +298,7 @@ async function stopRecording(resetStream = true) {
     source = null;
   }
 }
+
 
 // Button events
 startBtn.addEventListener("click", () => {

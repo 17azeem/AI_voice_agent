@@ -1,5 +1,6 @@
 import logging
-from fastapi import FastAPI , WebSocket
+import uuid
+from fastapi import FastAPI , WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -38,3 +39,24 @@ async def websocket_endpoint(websocket: WebSocket):
     while True:
         data = await websocket.receive_text()   # receive message from client
         await websocket.send_text(f"Echo: {data}")  # send back
+
+@app.websocket("/ws/audio")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    filename = f"recorded_audio_{uuid.uuid4().hex}.webm"
+    print(f"Saving audio to {filename}")
+    
+    try:
+        with open(filename, "wb") as f:
+            while True:
+                try:
+                    data = await websocket.receive_bytes()
+                    f.write(data)
+                except WebSocketDisconnect:
+                    print("Client disconnected gracefully")
+                    break
+                except Exception as e:
+                    print("Unexpected error:", e)
+                    break
+    finally:
+        print("WebSocket session ended")
