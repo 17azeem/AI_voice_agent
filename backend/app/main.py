@@ -6,16 +6,7 @@ from fastapi.responses import FileResponse
 from dotenv import load_dotenv
 from app.core.config import STATIC_DIR
 from app.services.stt_service import STTService
-import assemblyai as aai
-from assemblyai.streaming.v3 import (
-    StreamingClient,
-    StreamingClientOptions,
-    StreamingEvents,
-    BeginEvent,
-    TurnEvent,
-    TerminationEvent,
-    StreamingError,
-)
+
 
 # === Load environment variables ===
 load_dotenv()
