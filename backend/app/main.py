@@ -1,16 +1,29 @@
-import logging
-import uuid
-from fastapi import FastAPI , WebSocket, WebSocketDisconnect
+import os
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from dotenv import load_dotenv
 from app.core.config import STATIC_DIR
+from app.services.stt_service import STTService
+import assemblyai as aai
+from assemblyai.streaming.v3 import (
+    StreamingClient,
+    StreamingClientOptions,
+    StreamingEvents,
+    BeginEvent,
+    TurnEvent,
+    TerminationEvent,
+    StreamingError,
+)
 
-from .core.logging_config import setup_logging
-from .routers.chat import router as chat_router
+# === Load environment variables ===
+load_dotenv()
+OUTPUT_DIR = "output"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-setup_logging()
-
+stt_service = STTService()
+# === FastAPI setup ===
 app = FastAPI(title="Voice Agent")
 
 # CORS
@@ -22,41 +35,44 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Static
+# Static files
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 @app.get("/")
 def serve_index():
     return FileResponse(f"{STATIC_DIR}/index.html")
 
-# Routers
-app.include_router(chat_router)
-
-
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    while True:
-        data = await websocket.receive_text()   # receive message from client
-        await websocket.send_text(f"Echo: {data}")  # send back
-
 @app.websocket("/ws/audio")
-async def websocket_endpoint(websocket: WebSocket):
+async def audio_ws(websocket: WebSocket):
     await websocket.accept()
-    filename = f"recorded_audio_{uuid.uuid4().hex}.webm"
-    print(f"Saving audio to {filename}")
-    
+    print("🎙️ Client connected")
+
+    file_path = os.path.join(OUTPUT_DIR, "recorded_audio.webm")
+
+    # Remove previous recording if exists
+    if os.path.exists(file_path):
+        os.remove(file_path)
+
     try:
-        with open(filename, "wb") as f:
+        with open(file_path, "ab") as f:
             while True:
-                try:
-                    data = await websocket.receive_bytes()
-                    f.write(data)
-                except WebSocketDisconnect:
-                    print("Client disconnected gracefully")
+                data = await websocket.receive_bytes()
+                if data == b"END":
                     break
-                except Exception as e:
-                    print("Unexpected error:", e)
-                    break
+
+                # Write raw bytes to file
+                f.write(data)
+
+    except WebSocketDisconnect:
+        print("Client disconnected")
+    except Exception as e:
+        print(f"⚠️ Error in WS: {e}")
     finally:
-        print("WebSocket session ended")
+        # Close file
+        print(f"✅ Audio saved at {file_path}")
+
+        # Transcribe using STTService
+        text = stt_service.transcribe_file(file_path)
+        print(f"📝 Transcription:\n{text}")
+
+        await websocket.close()
