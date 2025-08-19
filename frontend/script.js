@@ -16,7 +16,7 @@ let animationId = null;
 let thinkingOffset = 0;
 
 // WebSocket URL
-const WS_URL = "ws://127.0.0.1:8000/ws/audio";
+const WS_URL = "ws://127.0.0.1:8000/ws";
 
 // GIF states
 const STATE_GIFS = {
@@ -55,56 +55,74 @@ function drawWaveform() {
     ctx.clearRect(0, 0, waveformCanvas.width, waveformCanvas.height);
   }
 }
-
-// Start recording
-async function startRecording() {
-  if (isRecording) return;
-
-  // Open WebSocket
-  ws = new WebSocket(WS_URL);
-  ws.binaryType = "arraybuffer";
-
-  ws.onopen = () => console.log("✅ WS connected");
-  ws.onclose = () => console.log("❌ WS closed");
-  ws.onerror = (err) => console.error("⚠️ WS error", err);
-
-  // Optional: handle transcription from server
-  ws.onmessage = (evt) => {
-    addChatMessage("AI", evt.data);
-  };
-
-  // Get microphone
-  stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
-  // MediaRecorder setup
-  mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
-  mediaRecorder.ondataavailable = async (e) => {
-    if (e.data.size > 0 && ws.readyState === WebSocket.OPEN) {
-      const buf = await e.data.arrayBuffer();
-      ws.send(buf);
+function floatTo16BitPCM(float32Array) {
+    const buffer = new ArrayBuffer(float32Array.length * 2);
+    const view = new DataView(buffer);
+    let offset = 0;
+    for (let i = 0; i < float32Array.length; i++, offset += 2) {
+        let s = Math.max(-1, Math.min(1, float32Array[i]));
+        view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
     }
-  };
-
-  mediaRecorder.onstop = () => {
-    isRecording = false;
-    console.log("🎙️ Recording stopped");
-  };
-
-  mediaRecorder.start(500); // send chunks every 500ms
-  isRecording = true;
-  updateState("listening");
-  drawWaveform();
+    return buffer;
 }
 
-// Stop recording
+/*  Start Recording with Web Audio API */
+async function startRecording() {
+    ws = new WebSocket("ws://127.0.0.1:8000/ws");
+
+    ws.onopen = () => console.log("WebSocket connected");
+    ws.onclose = () => console.log("WebSocket closed");
+    ws.onerror = (err) => console.error("WebSocket error", err);
+
+    
+    ws.onmessage = (event) => {
+    try {
+        const msg = JSON.parse(event.data);
+        console.log(msg);
+
+        if (msg.type === "transcript") {
+            // Show transcript in AI chat bubble
+            addChatMessage("AI", msg.text);
+        } else {
+            console.log("Server message:", msg);
+        }
+    } catch (err) {
+        console.error("Failed to parse server message", err, event.data);
+    }
+};
+
+
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+    audioCtx = new AudioContext({ sampleRate: 16000 }); 
+    source = audioCtx.createMediaStreamSource(stream);
+    processor = audioCtx.createScriptProcessor(4096, 1, 1);
+
+    source.connect(processor);
+    processor.connect(audioCtx.destination);
+
+    processor.onaudioprocess = (e) => {
+        const inputData = e.inputBuffer.getChannelData(0); 
+        const pcm16 = floatTo16BitPCM(inputData);
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(pcm16);
+        }
+    };
+}
+
+/*  Stop Recording */
 function stopRecording() {
-  if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
-  if (stream) stream.getTracks().forEach(t => t.stop());
-  if (ws && ws.readyState === WebSocket.OPEN) ws.send("END");
-  if (ws) ws.close();
-  isRecording = false;
-  updateState("listening");
-  ctx.clearRect(0, 0, waveformCanvas.width, waveformCanvas.height);
+    if (processor) {
+        processor.disconnect();
+        processor.onaudioprocess = null;
+    }
+    if (source) source.disconnect();
+    if (audioCtx) audioCtx.close();
+
+    if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+    }
+    if (ws) ws.close();
 }
 
 // Add messages to chat

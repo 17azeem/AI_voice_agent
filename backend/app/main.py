@@ -1,4 +1,5 @@
 import os
+import asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -6,6 +7,7 @@ from fastapi.responses import FileResponse
 from dotenv import load_dotenv
 from app.core.config import STATIC_DIR
 from app.services.stt_service import STTService
+from app.routers.transcriber import AssemblyAIStreamingTranscriber
 
 
 # === Load environment variables ===
@@ -33,37 +35,22 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 def serve_index():
     return FileResponse(f"{STATIC_DIR}/index.html")
 
-@app.websocket("/ws/audio")
-async def audio_ws(websocket: WebSocket):
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    print("🎙️ Client connected")
+    print("🎤 Client connected")
 
-    file_path = os.path.join(OUTPUT_DIR, "recorded_audio.webm")
-
-    # Remove previous recording if exists
-    if os.path.exists(file_path):
-        os.remove(file_path)
+    loop = asyncio.get_running_loop()
+    transcriber = AssemblyAIStreamingTranscriber(
+        websocket, loop, sample_rate=16000)
 
     try:
-        with open(file_path, "ab") as f:
-            while True:
-                data = await websocket.receive_bytes()
-                if data == b"END":
-                    break
+        while True:
+            data = await websocket.receive_bytes()
+            transcriber.stream_audio(data)
 
-                # Write raw bytes to file
-                f.write(data)
-
-    except WebSocketDisconnect:
-        print("Client disconnected")
     except Exception as e:
-        print(f"⚠️ Error in WS: {e}")
+        print(f"⚠️ WebSocket connection closed: {e}")
+
     finally:
-        # Close file
-        print(f"✅ Audio saved at {file_path}")
-
-        # Transcribe using STTService
-        text = stt_service.transcribe_file(file_path)
-        print(f"📝 Transcription:\n{text}")
-
-        await websocket.close()
+        transcriber.close()
