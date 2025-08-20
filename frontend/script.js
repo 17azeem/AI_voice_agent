@@ -75,21 +75,16 @@ async function startRecording() {
     ws.onerror = (err) => console.error("WebSocket error", err);
 
     
-    ws.onmessage = (event) => {
-    try {
-        const msg = JSON.parse(event.data);
-        console.log(msg);
-
-        if (msg.type === "transcript") {
-            // Show transcript in AI chat bubble
-            addChatMessage("AI", msg.text);
-        } else {
-            console.log("Server message:", msg);
-        }
-    } catch (err) {
-        console.error("Failed to parse server message", err, event.data);
+ws.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
+    if (msg.type === "transcript") {
+        addChatMessage("AI", msg.text);
+    } else if (msg.type === "ai_response") {
+        addChatMessage("AI", msg.text); // streamed response
     }
 };
+
+
 
 
     stream = await navigator.mediaDevices.getUserMedia({ audio: true });

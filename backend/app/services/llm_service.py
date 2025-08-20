@@ -32,3 +32,28 @@ class LLMService:
         except Exception as e:
             logger.exception("Failed extracting LLM text: %s", e)
         return text
+
+    def stream(self, history: list[types.Content]):
+        """
+        Stream response from Gemini LLM.
+        Yields tokens one by one.
+        """
+        contents = [SYSTEM_PROMPT] + history[-8:]
+        logger.info("Streaming LLM response with %d messages", len(contents))
+
+        try:
+            stream = self.client.models.generate_content_stream(
+                model=self.model,
+                contents=contents,
+                config=types.GenerateContentConfig(max_output_tokens=1000, temperature=0.3),
+            )
+            for event in stream:
+                if hasattr(event, "candidates") and event.candidates:
+                    for candidate in event.candidates:
+                        if hasattr(candidate, "content") and candidate.content.parts:
+                            for part in candidate.content.parts:
+                                if hasattr(part, "text") and part.text:
+                                    yield part.text
+        except Exception as e:
+            logger.exception("Error while streaming response: %s", e)
+            yield "[Error generating response]"

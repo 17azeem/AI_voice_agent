@@ -1,5 +1,6 @@
 import os
 import asyncio
+import tempfile
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -7,6 +8,7 @@ from fastapi.responses import FileResponse
 from dotenv import load_dotenv
 from app.core.config import STATIC_DIR
 from app.services.stt_service import STTService
+from app.services.llm_service import LLMService
 from app.routers.transcriber import AssemblyAIStreamingTranscriber
 
 
@@ -16,6 +18,7 @@ OUTPUT_DIR = "output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 stt_service = STTService()
+llm_service = LLMService()
 # === FastAPI setup ===
 app = FastAPI(title="Voice Agent")
 
@@ -41,16 +44,13 @@ async def websocket_endpoint(websocket: WebSocket):
     print("🎤 Client connected")
 
     loop = asyncio.get_running_loop()
-    transcriber = AssemblyAIStreamingTranscriber(
-        websocket, loop, sample_rate=16000)
+    transcriber = AssemblyAIStreamingTranscriber(websocket, loop)
 
     try:
         while True:
             data = await websocket.receive_bytes()
             transcriber.stream_audio(data)
-
     except Exception as e:
         print(f"⚠️ WebSocket connection closed: {e}")
-
     finally:
         transcriber.close()
