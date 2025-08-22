@@ -1,7 +1,6 @@
 import os
 import asyncio
 import json
-import base64
 import websockets
 from fastapi import WebSocket
 from assemblyai.streaming.v3 import (
@@ -57,7 +56,7 @@ class AssemblyAIStreamingTranscriber:
                 client.set_params(StreamingSessionParameters(format_turns=True))
 
     async def stream_llm_to_murf(self, user_text: str):
-        """Stream LLM response to Murf TTS and print base64 audio"""
+        """Stream LLM response to Murf TTS and forward audio chunks to client"""
         try:
             if not MURF_WS_URL or not MURF_API_KEY:
                 print("❌ Murf WS URL or API key missing!")
@@ -67,9 +66,10 @@ class AssemblyAIStreamingTranscriber:
             print(f"🌐 Connecting to Murf WS: {murf_url}")
 
             if not self.murf_ws or not getattr(self.murf_ws, "open", False):
-                print("🌐 (Re)connecting to Murf WS...")
                 self.murf_ws = await websockets.connect(murf_url)
                 print("🎤 Murf WS connected")
+
+                # send voice config once per connection
                 voice_config_msg = {
                     "voice_config": {
                         "voiceId": "en-US-amara",
@@ -82,10 +82,9 @@ class AssemblyAIStreamingTranscriber:
                 await self.murf_ws.send(json.dumps(voice_config_msg))
                 print("✅ Voice config sent to Murf")
 
-            full_audio_base64 = []
-
             async def receive_audio():
-                first_chunk = True
+                """Forward Murf audio to frontend as soon as it's received"""
+                full_audio_base64 = []
                 try:
                     while True:
                         msg = await self.murf_ws.recv()
@@ -94,24 +93,32 @@ class AssemblyAIStreamingTranscriber:
                         if "audio" in data:
                             audio_b64 = data["audio"]
                             full_audio_base64.append(audio_b64)
-                            print(f"🔊 Murf audio chunk (base64 length={len(audio_b64)})")
-                            print(audio_b64[:100] + "..." if len(audio_b64) > 100 else audio_b64)
+
+                            # forward chunk to client
+                            await self.websocket.send_json({
+                                "type": "ai_audio",
+                                "audio": audio_b64
+                            })
+
+                            print(f"🔊 Sent Murf audio chunk to client (base64 length={len(audio_b64)})")
+                            if len(audio_b64) > 100:
+                                print(audio_b64[:100] + "...")
 
                         if data.get("final"):
-                            print("✅ Murf TTS completed for this turn")
                             combined_b64 = "".join(full_audio_base64)
+                            print("✅ Murf TTS completed for this turn")
                             print(f"🎧 Full audio base64 length: {len(combined_b64)}")
                             break
                 except Exception as e:
                     print("❌ Error receiving Murf audio:", e)
 
             async def send_llm_to_murf():
+                """Send LLM streamed text chunks to Murf"""
                 try:
                     history = [types.Content(role="user", parts=[types.Part(text=user_text)])]
                     for chunk in llm_service.stream(history):
                         print("💬 LLM chunk:", chunk)
                         await self.murf_ws.send(json.dumps({"text": chunk, "end": False}))
-                    # send final end=True after all chunks
                     await self.murf_ws.send(json.dumps({"text": "", "end": True}))
                 except Exception as e:
                     print("❌ Error streaming LLM response:", e)
