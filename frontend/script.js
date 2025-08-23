@@ -15,7 +15,17 @@ let isRecording = false;
 let animationId = null;
 let thinkingOffset = 0;
 
-// WebSocket URL
+// --- Audio playback variables ---
+let audioContext;
+let playheadTime;
+let isPlaying = false;
+let wavHeaderSet = true;
+
+// 🔹 Ordered playback buffers
+let expectedChunk = 1;
+let chunkBuffer = {}; // store out-of-order chunks
+
+const SAMPLE_RATE = 44100;
 const WS_URL = "ws://127.0.0.1:8000/ws";
 
 // GIF states
@@ -32,32 +42,63 @@ function updateState(newState) {
     newState.charAt(0).toUpperCase() + newState.slice(1) + "...";
 }
 
-// Draw waveform animation
-function drawWaveform() {
-  animationId = requestAnimationFrame(drawWaveform);
-  ctx.clearRect(0, 0, waveformCanvas.width, waveformCanvas.height);
+// --- Audio Helpers ---
+function base64ToPCMFloat32(base64) {
+  let binary = atob(base64);
+  const offset = wavHeaderSet ? 44 : 0; // Skip WAV header first time
+  wavHeaderSet = false;
+  const length = binary.length - offset;
 
-  if (isRecording) {
-    ctx.lineWidth = 4;
-    ctx.strokeStyle = "#4caf50";
-    ctx.beginPath();
-    let sliceWidth = waveformCanvas.width / 100;
-    let x = 0;
-    for (let i = 0; i < 100; i++) {
-      const y =
-        waveformCanvas.height / 2 +
-        Math.sin((i + thinkingOffset) * 0.3) * 30;
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-      x += sliceWidth;
-    }
-    thinkingOffset += 3;
-    ctx.stroke();
-  } else {
-    ctx.clearRect(0, 0, waveformCanvas.width, waveformCanvas.height);
+  const buffer = new ArrayBuffer(length);
+  const byteArray = new Uint8Array(buffer);
+  for (let i = 0; i < byteArray.length; i++) {
+    byteArray[i] = binary.charCodeAt(i + offset);
+  }
+
+  const view = new DataView(byteArray.buffer);
+  const sampleCount = byteArray.length / 2;
+  const float32Array = new Float32Array(sampleCount);
+
+  for (let i = 0; i < sampleCount; i++) {
+    const int16 = view.getInt16(i * 2, true);
+    float32Array[i] = int16 / 32768;
+  }
+  return float32Array;
+}
+
+function playFloat32Array(float32Array) {
+  const buffer = audioContext.createBuffer(1, float32Array.length, SAMPLE_RATE);
+  buffer.copyToChannel(float32Array, 0);
+  const source = audioContext.createBufferSource();
+  source.buffer = buffer;
+  source.connect(audioContext.destination);
+
+  const now = audioContext.currentTime;
+  if (playheadTime < now) playheadTime = now + 0.05; // small delay
+  source.start(playheadTime);
+  playheadTime += buffer.duration;
+}
+
+// --- Ordered playback ---
+function handleAudioChunk(chunkId, base64Audio) {
+  console.log(`🎧 Received chunk ${chunkId}, expected ${expectedChunk}`);
+
+  // store chunk
+  chunkBuffer[chunkId] = base64Audio;
+
+  // try playing in order
+  while (chunkBuffer[expectedChunk]) {
+    const b64 = chunkBuffer[expectedChunk];
+    delete chunkBuffer[expectedChunk];
+
+    const float32Array = base64ToPCMFloat32(b64);
+    if (float32Array) playFloat32Array(float32Array);
+
+    expectedChunk++;
   }
 }
 
+// --- WebSocket + Recording ---
 function floatTo16BitPCM(float32Array) {
   const buffer = new ArrayBuffer(float32Array.length * 2);
   const view = new DataView(buffer);
@@ -69,33 +110,31 @@ function floatTo16BitPCM(float32Array) {
   return buffer;
 }
 
-/*  Start Recording with Web Audio API */
 async function startRecording() {
   ws = new WebSocket(WS_URL);
 
-  ws.onopen = () => console.log("🔗 WebSocket connected");
+  ws.onopen = () => {
+    console.log("🔗 WebSocket connected");
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    playheadTime = audioContext.currentTime;
+    expectedChunk = 1;
+    chunkBuffer = {};
+  };
   ws.onclose = () => console.log("❌ WebSocket closed");
   ws.onerror = (err) => console.error("⚠️ WebSocket error", err);
 
   ws.onmessage = (event) => {
     const msg = JSON.parse(event.data);
-
     if (msg.type === "transcript") {
       addChatMessage("User", msg.text);
     } else if (msg.type === "ai_response") {
-      addChatMessage("AI", msg.text); // streamed LLM response
+      addChatMessage("AI", msg.text);
     } else if (msg.type === "ai_audio") {
-      console.log(
-        "✅ Client received audio chunk (base64 length=" +
-          msg.audio.length +
-          ")"
-      );
-      // Just acknowledge receipt of base64 audio
+      handleAudioChunk(msg.chunk_id, msg.audio);
     }
   };
 
   stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
   audioCtx = new AudioContext({ sampleRate: 16000 });
   source = audioCtx.createMediaStreamSource(stream);
   processor = audioCtx.createScriptProcessor(4096, 1, 1);
@@ -106,13 +145,10 @@ async function startRecording() {
   processor.onaudioprocess = (e) => {
     const inputData = e.inputBuffer.getChannelData(0);
     const pcm16 = floatTo16BitPCM(inputData);
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(pcm16);
-    }
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(pcm16);
   };
 }
 
-/*  Stop Recording */
 function stopRecording() {
   if (processor) {
     processor.disconnect();
@@ -121,19 +157,17 @@ function stopRecording() {
   if (source) source.disconnect();
   if (audioCtx) audioCtx.close();
 
-  if (stream) {
-    stream.getTracks().forEach((track) => track.stop());
-  }
+  if (stream) stream.getTracks().forEach((t) => t.stop());
   if (ws) {
     ws.close();
-    ws = null; // reset to null for reconnect logic
+    ws = null;
   }
 }
 
-// Add messages to chat
+// --- Chat UI ---
 function addChatMessage(sender, text) {
   const msgDiv = document.createElement("div");
-  msgDiv.classList.add("chat-message", sender === "You" ? "user" : "ai");
+  msgDiv.classList.add("chat-message", sender === "User" ? "user" : "ai");
 
   const bubble = document.createElement("div");
   bubble.classList.add("bubble");
@@ -144,9 +178,8 @@ function addChatMessage(sender, text) {
   chatContainer.scrollTop = chatContainer.scrollHeight;
 }
 
-// Button events
+// --- Buttons ---
 startBtn.addEventListener("click", () => {
-  document.getElementById("chat-llm-status-gif").style.display = "block";
   startBtn.style.display = "none";
   stopBtn.style.display = "inline-block";
   updateState("listening");

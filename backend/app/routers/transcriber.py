@@ -21,6 +21,7 @@ class AssemblyAIStreamingTranscriber:
         self.websocket = websocket
         self.loop = loop
         self.murf_ws = None  # Murf websocket connection
+        self.chunk_counter = 1  # 🔹 assign sequential IDs to audio chunks
 
         # AssemblyAI streaming client
         self.client = StreamingClient(
@@ -72,7 +73,7 @@ class AssemblyAIStreamingTranscriber:
                 # send voice config once per connection
                 voice_config_msg = {
                     "voice_config": {
-                        "voiceId": "en-US-amara",
+                        "voiceId": "en-IN-eashwar",
                         "style": "Conversational",
                         "rate": 0,
                         "pitch": 0,
@@ -94,20 +95,26 @@ class AssemblyAIStreamingTranscriber:
                             audio_b64 = data["audio"]
                             full_audio_base64.append(audio_b64)
 
-                            # forward chunk to client
+                            # 🔹 forward chunk with sequence number
                             await self.websocket.send_json({
                                 "type": "ai_audio",
+                                "chunk_id": self.chunk_counter,
                                 "audio": audio_b64
                             })
-
-                            print(f"🔊 Sent Murf audio chunk to client (base64 length={len(audio_b64)})")
-                            if len(audio_b64) > 100:
-                                print(audio_b64[:100] + "...")
+                            print(f"🔊 Sent Murf audio chunk #{self.chunk_counter} to client "
+                                  f"(len={len(audio_b64)})")
+                            self.chunk_counter += 1
 
                         if data.get("final"):
                             combined_b64 = "".join(full_audio_base64)
                             print("✅ Murf TTS completed for this turn")
                             print(f"🎧 Full audio base64 length: {len(combined_b64)}")
+
+                            # 🔹 notify frontend playback is complete
+                            await self.websocket.send_json({
+                                "type": "ai_audio",
+                                "final": True
+                            })
                             break
                 except Exception as e:
                     print("❌ Error receiving Murf audio:", e)
