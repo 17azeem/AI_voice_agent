@@ -11,19 +11,27 @@ from assemblyai.streaming.v3 import (
     TerminationEvent, StreamingError
 )
 from app.services.llm_service import LLMService, types
+from tavily import TavilyClient
 
 llm_service = LLMService()
 aai_api_key = os.getenv("ASSEMBLYAI_API_KEY")
 MURF_WS_URL = os.getenv("MURF_TTS_WS", "wss://api.murf.ai/v1/speech/stream-input")
 MURF_API_KEY = os.getenv("MURF_API_KEY")
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 
-# === Persona Prompt (as first user message, not system) ===
+# === Persona Prompt ===
 PERSONA = """ 
 You are an AI agent taking the persona of Rancho (from the movie 3 Idiots). 
-Your role is to answer questions with wit, humor, and simple explanations.
-Answer the each question in less than 50 words.
+Your role is to answer questions with wit, humor, and simple explanations. 
+Answer each question in less than 50 words. 
+
 You are deeply knowledgeable in Artificial Intelligence, Machine Learning, Python, Java, and coding concepts. 
 You break down complex technical topics into easy, practical examples, just like Rancho would explain things in class. 
+
+In addition, you have a skill called **“News Teller”**:
+- When the user asks for latest AI/ML/tech news, fetch recent headlines (from API or feed) and present them in Rancho’s fun conversational style.
+- Keep it short, 3 key updates max.
+- Add a witty comment or motivational twist after sharing news.
 
 Conversational Style Guidelines:
 - Use casual, friendly Hinglish (mix of Hindi + English), but keep it clear and relatable. 
@@ -31,40 +39,15 @@ Conversational Style Guidelines:
 - Encourage curiosity and practical learning instead of rote memorization. 
 - Always give real-world analogies when explaining coding/AI/ML concepts. 
 - Speak as if you’re a friend guiding the user, not a strict teacher. 
-
-Examples of Dialogues & Situations:
-
-User: Rancho, I feel stressed about exams.  
-Rancho (AI): Arre yaar, stress ka toh kaam hi hai pressure banana. Tu bas samajhne pe focus kar—marks toh apne aap peeche aa jayenge. Samajh gaya?  
-
-User: I don’t know what career to choose.  
-Rancho (AI): Simple hai, dost. Dil se puchh—kya cheez karte hue tu time ka track bhool jaata hai? Wahi tera career hai. Passion ke peeche bhaag, success toh apne aap miljayegi.  
-
-User: Everyone is ahead of me, I feel left behind.  
-Rancho (AI): Race ghode jeet-te hain, insaan nahi. Tu bas apna kaam karo, comparison ka load chhod de. Life mein “All is Well” mantra yaad rakh.  
-
-User: Rancho, what is Machine Learning?  
-Rancho (AI): ML matlab ek dost ko baar-baar samjhana ki yeh cheez aise hoti hai… aur ek din woh khud karne lage bina tujhe bulaye. Computer ko bhi data se “experience” dilwate ho, aur woh khud seekh leta hai. Samajh aaya?  
-
-User: Rancho, I am not able to understand recursion in coding.  
-Rancho (AI): Arre recursion matlab apni mummy ko phone karna aur kehna “maa, khana bana do”, aur mummy bole “pehle tu chawal dhoke rakh de”. Matlab ek problem ko solve karne ke liye chhoti problem pehle solve karni. Bas ek din khud coding karke dekh, recursion dost ban jayega.  
-
-User: Rancho, explain Python lists vs tuples.  
-Rancho (AI): Lists are like your messy hostel room — you can move things around anytime. Tuples are like marriage — once committed, you can’t change. Use lists for flexibility, tuples for stability.
-
-Always stay in Rancho persona, maintain humor, and make even the toughest AI/ML/coding concepts sound simple, practical, and motivating.
 """
 
-# === Helpers: clean + chunk text for TTS ===
+# === Helpers ===
 def clean_text_for_tts(text: str) -> str:
-    """Remove markdown-like characters before TTS."""
     return re.sub(r'[*_#`]', '', text).strip()
 
 def split_into_chunks(text: str, max_len: int = 50):
-    """Split into smaller chunks by sentence boundaries for TTS."""
     sentences = re.split(r'(?<=[.!?]) +', text)
     chunks, current = [], ""
-
     for s in sentences:
         if len(current) + len(s) < max_len:
             current += " " + s
@@ -75,26 +58,66 @@ def split_into_chunks(text: str, max_len: int = 50):
         chunks.append(current.strip())
     return chunks
 
+def enforce_word_limit(text: str, max_words: int = 100) -> str:
+    """ Ensure output is capped to max_words. """
+    words = text.split()
+    return " ".join(words[:max_words]) + ("..." if len(words) > max_words else "")
 
+# === Tavily helper ===
+tavily_client = TavilyClient(api_key=TAVILY_API_KEY)
+
+def fetch_ai_ml_news():
+    """ Fetch AI/ML news and rewrite in Rancho’s style via LLM. """
+    try:
+        response = tavily_client.search(
+            query="Artificial Intelligence Machine Learning",
+            topic="news",
+            days=3,
+            max_results=3
+        )
+        results = response.get("results", [])
+        if not results:
+            return "Mere dost, abhi koi AI/ML news nahi mili. Thoda der baad try karo."
+
+        # ✅ Clean titles, remove URLs
+        news_list = [re.sub(r"http\S+", "", item["title"]).strip() for item in results]
+        combined_news = " ".join(news_list)
+
+        # ✅ Ask LLM to rewrite nicely in Rancho’s persona
+        history_for_llm = [
+            types.Content(role="user", parts=[types.Part(text=PERSONA)]),
+            types.Content(role="user", parts=[types.Part(
+                text=f"Summarize these AI/ML news headlines in less than 100 words in Rancho’s witty Hinglish style:\n{combined_news}"
+            )])
+        ]
+
+        summary = []
+        for chunk in llm_service.stream(history_for_llm):
+            if chunk:
+                summary.append(chunk)
+
+        return enforce_word_limit("".join(summary).strip(), 100)
+
+    except Exception as e:
+        print("❌ Tavily error:", e)
+        return "Sorry yaar, AI/ML news fetch karne mein gadbad ho gayi."
+
+# === Main Class ===
 class AssemblyAIStreamingTranscriber:
     def __init__(self, websocket: WebSocket, loop, sample_rate=16000):
         self.websocket = websocket
         self.loop = loop
-        self.murf_ws = None  # Murf websocket connection
+        self.murf_ws = None
         self.chat_history: list[types.Content] = []
 
-        # Initialize AssemblyAI client
         self.client = StreamingClient(StreamingClientOptions(api_key=aai_api_key))
         self.client.on(StreamingEvents.Begin, self.on_begin)
         self.client.on(StreamingEvents.Turn, self.on_turn)
         self.client.on(StreamingEvents.Termination, self.on_termination)
         self.client.on(StreamingEvents.Error, self.on_error)
+        self.client.connect(StreamingParameters(sample_rate=sample_rate, format_turns=False))
 
-        self.client.connect(
-            StreamingParameters(sample_rate=sample_rate, format_turns=False)
-        )
-
-        # Persona injection (as "user" message)
+        # Persona injection
         self.chat_history.append(types.Content(role="user", parts=[types.Part(text=PERSONA)]))
 
     def on_begin(self, client, event: BeginEvent):
@@ -121,14 +144,11 @@ class AssemblyAIStreamingTranscriber:
                 return
 
             murf_url = f"{MURF_WS_URL}?api-key={MURF_API_KEY}&sample_rate=44100&channel_type=MONO&format=WAV"
-            print(f"🌐 Murf WS URL: {murf_url}")
-
             if not self.murf_ws or not getattr(self.murf_ws, "open", False):
                 self.murf_ws = await websockets.connect(murf_url)
-                print("🎤 Murf WS connected")
                 voice_config_msg = {
                     "voice_config": {
-                        "voiceId": "hi-IN-kabir",
+                        "voiceId": "hi-IN-amit",
                         "style": "Conversational",
                         "rate": 0,
                         "pitch": 0,
@@ -136,68 +156,59 @@ class AssemblyAIStreamingTranscriber:
                     }
                 }
                 await self.murf_ws.send(json.dumps(voice_config_msg))
-                print("✅ Voice config sent to Murf")
 
             turn_chunk_id = 1
 
             async def receive_audio():
                 nonlocal turn_chunk_id
-                try:
-                    while True:
-                        msg = await self.murf_ws.recv()
-                        data = json.loads(msg)
-
-                        if "audio" in data:
-                            audio_b64 = data["audio"]
-                            await self.websocket.send_json({
-                                "type": "ai_audio",
-                                "chunk_id": turn_chunk_id,
-                                "audio": audio_b64
-                            })
-                            print(f"🔊 Sent Murf audio chunk #{turn_chunk_id}")
-                            turn_chunk_id += 1
-
-                        if data.get("final"):
-                            await self.websocket.send_json({"type": "ai_audio", "final": True})
-                            print("✅ Murf TTS completed for this turn")
-                            break
-                except Exception as e:
-                    print("❌ Error receiving Murf audio:", e)
+                while True:
+                    msg = await self.murf_ws.recv()
+                    data = json.loads(msg)
+                    if "audio" in data:
+                        audio_b64 = data["audio"]
+                        await self.websocket.send_json({
+                            "type": "ai_audio",
+                            "chunk_id": turn_chunk_id,
+                            "audio": audio_b64
+                        })
+                        turn_chunk_id += 1
+                    if data.get("final"):
+                        await self.websocket.send_json({"type": "ai_audio", "final": True})
+                        break
 
             async def send_llm_to_murf_and_client():
-                full_text = []
                 try:
-                    history_for_llm = self.chat_history + [
-                        types.Content(role="user", parts=[types.Part(text=user_text)])
-                    ]
+                    # ✅ Handle AI/ML news queries
+                    if "ai news" in user_text.lower() or "ml news" in user_text.lower():
+                        final_text = fetch_ai_ml_news()
+                    else:
+                        full_text = []
+                        history_for_llm = self.chat_history + [
+                            types.Content(role="user", parts=[types.Part(text=user_text)])
+                        ]
+                        for chunk in llm_service.stream(history_for_llm):
+                            if not chunk:
+                                continue
+                            full_text.append(chunk)
+                            await self.websocket.send_json({"type": "llm_text", "text": chunk})
+                        final_text = enforce_word_limit("".join(full_text).strip(), 100)
 
-                    for chunk in llm_service.stream(history_for_llm):
-                        if not chunk:
-                            continue
-                        full_text.append(chunk)
-                        await self.websocket.send_json({"type": "llm_text", "text": chunk})
-
-                    final_text = "".join(full_text).strip()
                     await self.websocket.send_json({"type": "llm_text_final", "text": final_text})
 
-                    # ✅ Clean + chunk text for Murf
+                    # ✅ Send to Murf in chunks
                     for tts_chunk in split_into_chunks(clean_text_for_tts(final_text)):
                         await self.murf_ws.send(json.dumps({"text": tts_chunk, "end": False}))
                     await self.murf_ws.send(json.dumps({"text": "", "end": True}))
 
-                    # ✅ Update conversation history
+                    # ✅ Update chat history
                     self.chat_history.append(types.Content(role="user", parts=[types.Part(text=user_text)]))
                     self.chat_history.append(types.Content(role="model", parts=[types.Part(text=final_text)]))
 
                 except Exception as e:
-                    print("❌ Error streaming LLM/Murf:", e)
-                    try:
-                        await self.websocket.send_json({"type": "llm_text_final", "text": "[Error generating response]"})
-                    except Exception:
-                        pass
+                    print("❌ Error in send_llm_to_murf_and_client:", e)
+                    await self.websocket.send_json({"type": "llm_text_final", "text": "[Error generating response]"})
 
             await asyncio.gather(receive_audio(), send_llm_to_murf_and_client())
-            print("✅ Ready for next user transcript")
 
         except Exception as e:
             print("❌ Error in stream_llm_to_murf:", e)
@@ -218,8 +229,6 @@ class AssemblyAIStreamingTranscriber:
         if self.murf_ws:
             await self.murf_ws.close()
             self.murf_ws = None
-            print("🛑 Murf WS closed")
 
     def close(self):
         self.client.disconnect(terminate=True)
-        print("🛑 AssemblyAI client disconnected")
