@@ -9,86 +9,36 @@ const stateGif = document.getElementById("state-gif");
 const gifWrap = document.getElementById("chat-llm-status-gif");
 const ctx = waveformCanvas.getContext("2d");
 
+// Note: The relatedLinksDiv is now located inside the chat-llm-container in HTML
+// so this variable is no longer necessary.
+
 let stream, ws = null;
 let micCtx, micSource, micProcessor;
-let audioContext, playheadTime;
-let wavHeaderSet = true;
 
-// Ordered playback
-let expectedChunk = 1;
-let chunkBuffer = {};
-
-// AI streaming bubble
 let currentAIBubble = null;
 let aiAccumulatedText = "";
+let awaitingLinks = false;
 
-// Waveform animation
 let waveRAF = null;
 let waveActive = false;
 
 const SAMPLE_RATE = 44100;
 const WS_URL = "ws://127.0.0.1:8000/ws";
 
-// GIF states
 const STATE_GIFS = {
-  idle: "/static/images/robot.gif",      
+  idle: "/static/images/robot.gif",
   listening: "/static/images/listening.gif",
   thinking: "/static/images/thinking.gif",
   speaking: "/static/images/speaking.gif",
 };
 
-function updateState(newState) {
-  if (STATE_GIFS[newState]) {
-    stateGif.src = STATE_GIFS[newState];
-  }
-  statusDiv.innerText = newState === "idle"
-    ? "Idle"
-    : newState.charAt(0).toUpperCase() + newState.slice(1) + "...";
+// === New Audio Decode Helpers ===
+let audioContext;
+let playheadTime = 0;
+let expectedChunk = 1;
+let chunkBuffer = {};
+let wavHeaderSet = true;
 
-  if (newState === "idle") {
-    gifWrap.style.display = "none";
-    stopWave();
-  } else if (newState === "listening") {
-    gifWrap.style.display = "block";
-    stopWave();
-  } else {
-    gifWrap.style.display = "block";
-  }
-}
-
-// Waveform animation
-function startWave() {
-  if (waveActive) return;
-  waveActive = true;
-  const w = waveformCanvas.width;
-  const h = waveformCanvas.height;
-
-  function draw(t) {
-    if (!waveActive) return;
-    ctx.clearRect(0, 0, w, h);
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    const A = 20;
-    const f = 0.004;
-    const speed = 0.0025;
-    for (let x = 0; x < w; x++) {
-      const y = h / 2 + A * Math.sin((x * f) + t * speed);
-      if (x === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-    ctx.stroke();
-    waveRAF = requestAnimationFrame(draw);
-  }
-  waveRAF = requestAnimationFrame(draw);
-}
-function stopWave() {
-  waveActive = false;
-  if (waveRAF) cancelAnimationFrame(waveRAF);
-  waveRAF = null;
-  ctx.clearRect(0, 0, waveformCanvas.width, waveformCanvas.height);
-}
-
-// Audio decode helpers
 function base64ToPCMFloat32(base64) {
   let binary = atob(base64);
   const offset = wavHeaderSet ? 44 : 0;
@@ -108,6 +58,7 @@ function base64ToPCMFloat32(base64) {
   }
   return float32Array;
 }
+
 function playFloat32Array(float32Array) {
   if (!audioContext) {
     audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -125,7 +76,6 @@ function playFloat32Array(float32Array) {
   playheadTime += buffer.duration;
 }
 
-// Ordered playback per turn
 function handleAudioChunk(chunkId, base64Audio, isFinal) {
   if (base64Audio) {
     updateState("speaking");
@@ -146,11 +96,11 @@ function handleAudioChunk(chunkId, base64Audio, isFinal) {
     expectedChunk = 1;
     chunkBuffer = {};
     wavHeaderSet = true;
-    updateState("listening");
+    updateState("idle");
   }
 }
 
-// WebSocket + microphone
+// === WebSocket + microphone ===
 function floatTo16BitPCM(float32Array) {
   const buffer = new ArrayBuffer(float32Array.length * 2);
   const view = new DataView(buffer);
@@ -162,14 +112,56 @@ function floatTo16BitPCM(float32Array) {
   return buffer;
 }
 
+
+function updateState(newState) {
+  console.log("🔄 State changed:", newState);
+  if (STATE_GIFS[newState]) stateGif.src = STATE_GIFS[newState];
+  statusDiv.innerText = newState === "idle" ?
+    "Idle" :
+    newState.charAt(0).toUpperCase() + newState.slice(1) + "...";
+
+  gifWrap.style.display = (newState === "idle") ? "none" : "block";
+  if (newState === "listening") stopWave();
+}
+
+// === Waveform ===
+function startWave() {
+  waveActive = true;
+  const WIDTH = waveformCanvas.width;
+  const HEIGHT = waveformCanvas.height;
+  const draw = () => {
+    if (!waveActive) return;
+    ctx.clearRect(0, 0, WIDTH, HEIGHT);
+    ctx.beginPath();
+    const mid = HEIGHT / 2;
+    for (let x = 0; x < WIDTH; x++) {
+      const y = mid + Math.sin(x / 10 + Date.now() / 100) * 20;
+      ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    waveRAF = requestAnimationFrame(draw);
+  };
+  draw();
+}
+function stopWave() {
+  waveActive = false;
+  if (waveRAF) cancelAnimationFrame(waveRAF);
+  ctx.clearRect(0, 0, waveformCanvas.width, waveformCanvas.height);
+}
+
+// === Mic + WebSocket ===
 async function startRecording() {
+  console.log("🎤 Starting recording, connecting to WebSocket:", WS_URL);
+  
+  if (!audioContext) {
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    await audioContext.resume();
+  }
+
   ws = new WebSocket(WS_URL);
 
   ws.onopen = () => {
-    console.log("🔗 WebSocket connected");
-    expectedChunk = 1;
-    chunkBuffer = {};
-    wavHeaderSet = true;
+    console.log("✅ WebSocket connected");
     updateState("listening");
   };
   ws.onclose = () => {
@@ -180,29 +172,33 @@ async function startRecording() {
 
   ws.onmessage = (event) => {
     const msg = JSON.parse(event.data);
+    console.log("📩 WS message received:", msg);
 
     if (msg.type === "transcript") {
-      addChatMessage("User", msg.text);
+      currentAIBubble = null;
+      aiAccumulatedText = "";
+      awaitingLinks = false;
+      addChatMessage("user", msg.text);
       updateState("thinking");
       startWave();
-    }
-    else if (msg.type === "llm_text") {
+    } else if (msg.type === "llm_text") {
       aiAccumulatedText += msg.text;
       addOrUpdateAIMessage(aiAccumulatedText, false);
-      updateState("thinking");
-      startWave();
-    }
-    else if (msg.type === "llm_text_final") {
-      aiAccumulatedText = msg.text;
+    } else if (msg.type === "llm_text_final") {
+      aiAccumulatedText = msg.text || aiAccumulatedText;
       addOrUpdateAIMessage(aiAccumulatedText, true);
-    }
-    else if (msg.type === "ai_audio") {
-      handleAudioChunk(msg.chunk_id, msg.audio, msg.final === true);
-      if (msg.final === true) {
-        aiAccumulatedText = "";
-        currentAIBubble = null;
-        stopWave();
-      }
+      awaitingLinks = msg.links_pending;
+    } else if (msg.type === "related_links") {
+      console.log("🔗 Related links received:", msg.links);
+      let linksHtml = "<b>📰 Related News:</b><br>";
+      msg.links.forEach(link => {
+        linksHtml += `<div class="news-links"><a href="${link.url}" target="_blank">${link.title}</a></div>`;
+      });
+      addChatMessage("ai", linksHtml, true);
+      awaitingLinks = false;
+      currentAIBubble = null;
+    } else if (msg.type === "ai_audio") {
+      handleAudioChunk(msg.chunk_id, msg.audio, msg.final);
     }
   };
 
@@ -212,7 +208,6 @@ async function startRecording() {
   micProcessor = micCtx.createScriptProcessor(4096, 1, 1);
   micSource.connect(micProcessor);
   micProcessor.connect(micCtx.destination);
-
   micProcessor.onaudioprocess = (e) => {
     const inputData = e.inputBuffer.getChannelData(0);
     const pcm16 = floatTo16BitPCM(inputData);
@@ -221,60 +216,57 @@ async function startRecording() {
 }
 
 function stopRecording() {
-  try {
-    if (micProcessor) {
-      micProcessor.disconnect();
-      micProcessor.onaudioprocess = null;
-      micProcessor = null;
-    }
-    if (micSource) {
-      micSource.disconnect();
-      micSource = null;
-    }
-    if (micCtx) {
-      micCtx.close();
-      micCtx = null;
-    }
-    if (stream) {
-      stream.getTracks().forEach((t) => t.stop());
-      stream = null;
-    }
-    if (ws) {
-      ws.close();
-      ws = null;
-    }
-    stopWave();
-    updateState("idle");
-  } catch (e) {
-    console.error(e);
+  if (ws) {
+    ws.close();
+    ws = null;
   }
+  if (micProcessor) {
+    micProcessor.disconnect();
+    micSource.disconnect();
+    micCtx.close();
+  }
+  if (stream) {
+    stream.getTracks().forEach(track => track.stop());
+  }
+  stopWave();
+  updateState("idle");
 }
 
-// Chat UI
-function addChatMessage(sender, text) {
+// === Chat UI ===
+function addChatMessage(sender, text, isHtml = false) {
   const msgDiv = document.createElement("div");
-  msgDiv.classList.add("chat-message", sender === "User" ? "user" : "ai");
+  msgDiv.classList.add("chat-message", sender === "user" ? "user" : "ai");
 
   const bubble = document.createElement("div");
   bubble.classList.add("bubble");
-  bubble.innerText = text;
+
+  if (isHtml) {
+    bubble.innerHTML = text;
+  } else {
+    bubble.textContent = text;
+  }
 
   msgDiv.appendChild(bubble);
   chatContainer.appendChild(msgDiv);
   chatContainer.scrollTop = chatContainer.scrollHeight;
-
-  if (sender === "AI") currentAIBubble = bubble;
 }
 
 function addOrUpdateAIMessage(text, isFinal) {
   if (!currentAIBubble) {
-    addChatMessage("AI", "");
+    const msgDiv = document.createElement("div");
+    msgDiv.classList.add("chat-message", "ai");
+    currentAIBubble = document.createElement("div");
+    currentAIBubble.classList.add("bubble");
+    msgDiv.appendChild(currentAIBubble);
+    chatContainer.appendChild(msgDiv);
   }
-  currentAIBubble.innerText = text;
+  currentAIBubble.innerHTML = text;
   chatContainer.scrollTop = chatContainer.scrollHeight;
+
+  if (isFinal && !awaitingLinks) currentAIBubble = null;
 }
 
-// Buttons
+// === Buttons ===
 startBtn.addEventListener("click", () => {
   startBtn.style.display = "none";
   stopBtn.style.display = "inline-block";
@@ -293,8 +285,8 @@ resetBtn.addEventListener("click", () => {
   updateState("idle");
   startBtn.style.display = "inline-block";
   stopBtn.style.display = "none";
-  resetBtn.style.display = "none";
 });
 
-// initialize to idle on load
+// init
 updateState("idle");
+console.log("✅ Chat UI initialized");

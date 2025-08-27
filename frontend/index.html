@@ -1,105 +1,113 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>FastAPI Frontend</title>
-    <link rel="stylesheet" href="/static/style.css?v=2">
-    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"/>
-    <style>
-        /* Chat messages styling */
+  <meta charset="UTF-8">
+  <title>FastAPI Frontend</title>
+  <link rel="stylesheet" href="/static/style.css?v=2">
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"/>
+  <style>
+    /* Chat messages styling */
+    #chat-llm-container{
+      margin: 20px;
+      flex: 1;
+      max-width: 400px;
+      height: 400px;
+      overflow-y: auto;
+      border: 2px solid rgb(2, 0, 55);
+      border-radius: 8px;
+      padding: 10px;
+      background-color: #fafafa;
+      font-family: Arial, sans-serif;
+      font-size: 14px;
+      display: block;
+    }
+    #chat-llm-container .chat-message {
+      display: flex;
+      margin: 8px 0;
+      max-width: 80%;
+      word-wrap: break-word;
+    }
+    #chat-llm-container .chat-message.user { justify-content: flex-end; }
+    #chat-llm-container .chat-message.ai { justify-content: flex-start; }
 
-#chat-llm-container{
-  margin: 20px;
-  flex: 1;
-  max-width: 400px;
-  height: 400px;
-  overflow-y: auto;
-  border: 2px solid rgb(2, 0, 55);
-  border-radius: 8px;
-  padding: 10px;
-  background-color: #fafafa;
-  font-family: Arial, sans-serif;
-  font-size: 14px;
-  display: block;
-}
-#chat-llm-container .chat-message {
-  display: flex;
-  margin: 8px 0;
-  max-width: 80%;
-  word-wrap: break-word;
-}
-
-#chat-llm-container .chat-message.user {
-  justify-content: flex-end;
-}
-
-#chat-llm-container .chat-message.ai {
-  justify-content: flex-start;
-}
-
-#chat-llm-container .chat-message .bubble {
-  padding: 10px 15px;
-  border-radius: 20px;
-  font-size: 14px;
-  line-height: 1.4;
-  max-width: 100%;
-}
-
-#chat-llm-container .chat-message.user .bubble {
-  background-color: rgb(0, 0, 83);
-  color: white;
-  border-bottom-right-radius: 0;
-}
-
-#chat-llm-container .chat-message.ai .bubble {
-  background-color: #e0e0e0;
-  color: #000;
-  border-bottom-left-radius: 0;
-}
-div#chat-llm-container .chat-message .bubble {
-  padding: 10px 15px !important;
-  border-radius: 20px !important;
-}
-button{
-    background: linear-gradient(90deg,rgba(2, 0, 74, 1) 0%, rgba(6, 6, 128, 1) 22%, rgba(0, 212, 255, 1) 100%);
-}
-    </style>
+    #chat-llm-container .chat-message .bubble {
+      padding: 10px 15px;
+      border-radius: 20px;
+      font-size: 14px;
+      line-height: 1.4;
+      max-width: 100%;
+    }
+    #chat-llm-container .chat-message.user .bubble {
+      background-color: rgb(0, 0, 83);
+      color: white;
+      border-bottom-right-radius: 0;
+    }
+    #chat-llm-container .chat-message.ai .bubble {
+      background-color: #e0e0e0;
+      color: #000;
+      border-bottom-left-radius: 0;
+    }
+    div#chat-llm-container .chat-message .bubble {
+      padding: 10px 15px !important;
+      border-radius: 20px !important;
+    }
+    button{
+      background: linear-gradient(90deg,rgba(2, 0, 74, 1) 0%, rgba(6, 6, 128, 1) 22%, rgba(0, 212, 255, 1) 100%);
+      color: #fff;
+      border: none;
+      padding: 8px 14px;
+      border-radius: 10px;
+      cursor: pointer;
+    }
+    #chat-llm-container .news-links {
+      margin-top: 5px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    #chat-llm-container .news-links a {
+      color: #0044cc;
+      text-decoration: underline;
+      font-size: 13px;
+    }
+  </style>
 </head>
 <body>
-<div class="center-container">
+  <div class="center-container">
     <button id="chat-llm-tab" class="tab">Chat LLM Query</button>
 
     <div id="chat-llm-section" style="padding: 10px;">
-        <div style="display: flex; gap: 20px;">
+      <div style="display: flex; gap: 20px;">
 
-            <div style="flex: 1; max-width: 600px;">
-                <div id="chat-llm-status-gif" style="text-align:center; margin-bottom:10px; display:none;">
-                    <img id="state-gif" src="/static/images/listening.gif" alt="State Animation" width="120">
-                </div>
+        <div style="flex: 1; max-width: 600px;">
+          <div id="chat-llm-status-gif" style="text-align:center; margin-bottom:10px; display:none;">
+            <img id="state-gif" src="/static/images/listening.gif" alt="State Animation" width="120">
+          </div>
 
-                <canvas id="chat-llm-waveform" width="600" height="100"></canvas>
+          <canvas id="chat-llm-waveform" width="600" height="100"></canvas>
 
-                <div style="margin-top: 10px;" >
-                    <button id="chat-llm-start">Start</button>
-                    <button id="chat-llm-stop" style="display:none">Stop</button>
-                    <button id="chat-llm-reset" style="display:none">Reset</button>
+          <div style="margin-top: 10px;">
+            <button id="chat-llm-start">Start</button>
+            <button id="chat-llm-stop" style="display:none">Stop</button>
+            <button id="chat-llm-reset" style="display:none">Reset</button>
+          </div>
 
-                </div>
+          <div id="chat-llm-status" style="margin-top: 10px; font-weight: bold; color: #ffffff00;"></div>
+          <audio id="chat-llm-playback" style="display:none"></audio>
 
-                <div id="chat-llm-status" style="margin-top: 10px; font-weight: bold;color: white;"></div>
-                <audio id="chat-llm-playback" style="display:none"></audio>
-
-                <img src="/static/images/chat_logo.jpg" alt="" width="200" height="200">
-
-            </div>
-
-            <div id="chat-llm-container" ></div>
-
+          <img src="/static/images/chat_logo.jpg" alt="" width="200" height="200">
         </div>
-    </div>
-</div>
 
-<script src="/static/script.js"></script>
+
+        <div id="chat-llm-container">
+          <div id="related-links" style="margin-top: 10px;"></div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/script.js"></script>
 </body>
 </html>
