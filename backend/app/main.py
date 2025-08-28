@@ -11,14 +11,11 @@ from app.services.stt_service import STTService
 from app.services.llm_service import LLMService
 from app.routers.transcriber import AssemblyAIStreamingTranscriber
 
-
 # === Load environment variables ===
 load_dotenv()
 OUTPUT_DIR = "output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-stt_service = STTService()
-llm_service = LLMService()
 # === FastAPI setup ===
 app = FastAPI(title="Voice Agent")
 
@@ -31,7 +28,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Static files
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 @app.get("/")
@@ -47,10 +43,31 @@ async def websocket_endpoint(websocket: WebSocket):
     transcriber = AssemblyAIStreamingTranscriber(websocket, loop)
 
     try:
+        # Step 1: Receive the config message first (JSON)
+        # This is the crucial change to get the API keys from the frontend
+        config_data = await websocket.receive_json()
+        if config_data.get("type") == "config":
+            print("🔑 Received config message. Initializing services...")
+            await transcriber.initialize_services(config_data)
+        else:
+            await websocket.close(code=1008, reason="First message must be config.")
+            return
+
+        # Step 2: Handle incoming audio data (bytes)
+        # Now we enter the loop to receive the audio stream
         while True:
             data = await websocket.receive_bytes()
-            transcriber.stream_audio(data)
+            if transcriber.client:
+                transcriber.stream_audio(data)
+            else:
+                print("⚠️ AAI client not initialized. Cannot stream audio.")
+                await websocket.send_json({"type": "error", "text": "AssemblyAI client not ready."})
+
+    except WebSocketDisconnect:
+        print("🔌 WebSocket connection disconnected.")
     except Exception as e:
-        print(f"⚠️ WebSocket connection closed: {e}")
+        print(f"❌ An error occurred: {e}")
     finally:
+        print("🧹 Cleaning up transcriber resources.")
         transcriber.close()
+        await transcriber.close_murf()
