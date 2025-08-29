@@ -235,7 +235,7 @@ class AssemblyAIStreamingTranscriber:
                 self.murf_ws = await websockets.connect(murf_url)
                 await self.murf_ws.send(json.dumps({
                     "voice_config": {
-                        "voiceId": "hi-IN-amit",
+                        "voiceId": "en-IN-eashwar",
                         "style": "Conversational",
                         "rate": 0,
                         "pitch": 0,
