@@ -79,10 +79,6 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function playFloat32Array(float32Array) {
-        if (!audioContext) {
-            audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            playheadTime = audioContext.currentTime;
-        }
         const buffer = audioContext.createBuffer(1, float32Array.length, SAMPLE_RATE);
         buffer.copyToChannel(float32Array, 0);
         const source = audioContext.createBufferSource();
@@ -99,7 +95,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (base64Audio) {
             // New logic: stop the microphone right before playing the first audio chunk
             if (expectedChunk === 1) {
-                stopMicrophone(); 
+                stopMicrophone();
             }
             updateState("speaking");
             startWave();
@@ -118,7 +114,7 @@ document.addEventListener("DOMContentLoaded", () => {
             wavHeaderSet = true;
             updateState("idle");
             // New logic: restart the microphone after the final audio chunk is processed
-            startMicrophone(); 
+            startMicrophone();
         }
     }
 
@@ -148,10 +144,6 @@ document.addEventListener("DOMContentLoaded", () => {
     // NEW: Dedicated function to start microphone input
     async function startMicrophone() {
         try {
-            if (!audioContext) {
-                audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                await audioContext.resume();
-            }
             stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             micCtx = new AudioContext({ sampleRate: 16000 });
             micSource = micCtx.createMediaStreamSource(stream);
@@ -248,7 +240,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 updateState("thinking");
                 stopMicrophone(); // Ensure microphone is off while thinking
                 startWave();
-                playheadTime = 0;
+                playheadTime = audioContext.currentTime; // Correctly reset playhead to current time
             } else if (msg.type === "llm_text") {
                 aiAccumulatedText += msg.text;
                 addOrUpdateAIMessage(aiAccumulatedText, false);
@@ -276,21 +268,12 @@ document.addEventListener("DOMContentLoaded", () => {
             introMessageDiv.remove();
             isFirstInteraction = false;
         }
-
-        if (ws && ws.readyState === WebSocket.CLOSED) {
-            connectWebSocket(); // Reconnect if closed
-        } else if (!ws) {
-            connectWebSocket(); // Initial connection if not established
-        }
-
+        await audioContext.resume(); // Ensure audio context is resumed before starting
         await startMicrophone(); // Start the microphone
     }
 
     function stopRecording() {
         stopMicrophone(); // Stop the microphone
-        if (ws) {
-            // Keep the WebSocket open, just stop the microphone
-        }
         updateState("idle");
     }
 
@@ -400,6 +383,10 @@ document.addEventListener("DOMContentLoaded", () => {
         geminiKeyInput.value = localStorage.getItem("geminiKey") || ""; // NEW: Load Gemini Key
         updateState("idle");
         initIntroMessage();
+        
+        // THIS IS THE KEY CHANGE
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
         connectWebSocket(); // This is the new change: connect on page load
     }
 });
