@@ -58,6 +58,10 @@ document.addEventListener("DOMContentLoaded", () => {
     let chunkBuffer = {};
     let wavHeaderSet = true;
 
+    // A more robust audio playback queue
+    let audioQueue = [];
+    let isPlaying = false;
+
     // === Core Functions ===
     function base64ToPCMFloat32(base64) {
         let binary = atob(base64);
@@ -78,16 +82,32 @@ document.addEventListener("DOMContentLoaded", () => {
         return float32Array;
     }
 
-    function playFloat32Array(float32Array) {
-        const buffer = audioContext.createBuffer(1, float32Array.length, SAMPLE_RATE);
-        buffer.copyToChannel(float32Array, 0);
-        const source = audioContext.createBufferSource();
-        source.buffer = buffer;
-        source.connect(audioContext.destination);
-        const now = audioContext.currentTime;
-        if (playheadTime < now) playheadTime = now + 0.05;
-        source.start(playheadTime);
-        playheadTime += buffer.duration;
+    // New function to play the next audio chunk from the queue
+    function playNextChunk() {
+        if (audioQueue.length > 0 && !isPlaying) {
+            isPlaying = true;
+            const float32Array = audioQueue.shift();
+
+            const buffer = audioContext.createBuffer(1, float32Array.length, SAMPLE_RATE);
+            buffer.copyToChannel(float32Array, 0);
+            const source = audioContext.createBufferSource();
+            source.buffer = buffer;
+            source.connect(audioContext.destination);
+
+            const now = audioContext.currentTime;
+            if (playheadTime < now) {
+                playheadTime = now + 0.05;
+            }
+
+            source.start(playheadTime);
+            playheadTime += buffer.duration;
+
+            // Set a flag to handle the end of this chunk
+            source.onended = () => {
+                isPlaying = false;
+                playNextChunk();
+            };
+        }
     }
 
     // NEW: Function to manage the audio chunks
@@ -99,14 +119,14 @@ document.addEventListener("DOMContentLoaded", () => {
             }
             updateState("speaking");
             startWave();
-            chunkBuffer[chunkId] = base64Audio;
-            while (chunkBuffer[expectedChunk]) {
-                const b64 = chunkBuffer[expectedChunk];
-                delete chunkBuffer[expectedChunk];
-                const float32Array = base64ToPCMFloat32(b64);
-                if (float32Array) playFloat32Array(float32Array);
-                expectedChunk++;
+            const float32Array = base64ToPCMFloat32(base64Audio);
+            if (float32Array) {
+                audioQueue.push(float32Array);
+                if (!isPlaying) {
+                    playNextChunk(); // Start playing if nothing is currently playing
+                }
             }
+            expectedChunk++; // Increment to handle the next chunk
         }
         if (isFinal) {
             expectedChunk = 1;
@@ -240,7 +260,6 @@ document.addEventListener("DOMContentLoaded", () => {
                 updateState("thinking");
                 stopMicrophone(); // Ensure microphone is off while thinking
                 startWave();
-                playheadTime = audioContext.currentTime; // Correctly reset playhead to current time
             } else if (msg.type === "llm_text") {
                 aiAccumulatedText += msg.text;
                 addOrUpdateAIMessage(aiAccumulatedText, false);
