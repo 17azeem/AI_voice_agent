@@ -3,12 +3,11 @@ document.addEventListener("DOMContentLoaded", () => {
     // === DOM Elements from both old and new UIs ===
     const messagesContainer = document.getElementById("messages");
     const chatHistoryContainer = document.getElementById("chat-history");
-   
     const waveformCanvas = document.getElementById("chat-llm-waveform");
     const stateGif = document.getElementById("state-gif");
     const gifWrap = document.getElementById("chat-llm-status-gif");
     const ctx = waveformCanvas.getContext("2d");
-    
+
     // Your audio control buttons from the old UI, now placed in the new input area
     const startBtn = document.getElementById("chat-llm-start");
     const stopBtn = document.getElementById("chat-llm-stop");
@@ -59,7 +58,7 @@ document.addEventListener("DOMContentLoaded", () => {
     let chunkBuffer = {};
     let wavHeaderSet = true;
 
-    // === Core Functions from Old Code ===
+    // === Core Functions ===
     function base64ToPCMFloat32(base64) {
         let binary = atob(base64);
         const offset = wavHeaderSet ? 44 : 0;
@@ -95,8 +94,13 @@ document.addEventListener("DOMContentLoaded", () => {
         playheadTime += buffer.duration;
     }
 
+    // NEW: Function to manage the audio chunks
     function handleAudioChunk(chunkId, base64Audio, isFinal) {
         if (base64Audio) {
+            // New logic: stop the microphone right before playing the first audio chunk
+            if (expectedChunk === 1) {
+                stopMicrophone(); 
+            }
             updateState("speaking");
             startWave();
             chunkBuffer[chunkId] = base64Audio;
@@ -113,6 +117,8 @@ document.addEventListener("DOMContentLoaded", () => {
             chunkBuffer = {};
             wavHeaderSet = true;
             updateState("idle");
+            // New logic: restart the microphone after the final audio chunk is processed
+            startMicrophone(); 
         }
     }
 
@@ -125,6 +131,44 @@ document.addEventListener("DOMContentLoaded", () => {
             view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
         }
         return buffer;
+    }
+
+    // NEW: Dedicated function to stop microphone input
+    function stopMicrophone() {
+        if (micProcessor) {
+            micProcessor.disconnect();
+            micSource.disconnect();
+            micCtx.close();
+        }
+        if (stream) {
+            stream.getTracks().forEach(track => track.stop());
+        }
+    }
+
+    // NEW: Dedicated function to start microphone input
+    async function startMicrophone() {
+        try {
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                await audioContext.resume();
+            }
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            micCtx = new AudioContext({ sampleRate: 16000 });
+            micSource = micCtx.createMediaStreamSource(stream);
+            micProcessor = micCtx.createScriptProcessor(4096, 1, 1);
+            micSource.connect(micProcessor);
+            micProcessor.connect(micCtx.destination);
+            micProcessor.onaudioprocess = (e) => {
+                const inputData = e.inputBuffer.getChannelData(0);
+                const pcm16 = floatTo16BitPCM(inputData);
+                if (ws && ws.readyState === WebSocket.OPEN) ws.send(pcm16);
+            };
+            updateState("listening");
+        } catch (err) {
+            console.error("Error accessing microphone:", err);
+            updateState("idle");
+            alert("Microphone access was denied. Please allow microphone permissions to use the voice chat feature.");
+        }
     }
 
     function updateState(newState) {
@@ -163,26 +207,15 @@ document.addEventListener("DOMContentLoaded", () => {
         ctx.clearRect(0, 0, waveformCanvas.width, waveformCanvas.height);
     }
 
-    async function startRecording() {
-        if (isFirstInteraction) {
-            introMessageDiv.remove();
-            isFirstInteraction = false;
-        }
-
-        console.log("🎤 Starting recording, connecting to WebSocket:", WS_URL);
+    function connectWebSocket() {
+        console.log("Connecting WebSocket:", WS_URL);
         const aaiKey = localStorage.getItem("aaiKey");
         const murfKey = localStorage.getItem("murfKey");
         const tavilyKey = localStorage.getItem("tavilyKey");
-        const geminiKey = localStorage.getItem("geminiKey"); // NEW: Get Gemini Key
+        const geminiKey = localStorage.getItem("geminiKey");
 
         if (!aaiKey) {
-            alert("Please enter your AssemblyAI API key in the sidebar.");
-            return;
-        }
-
-        if (!audioContext) {
-            audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            await audioContext.resume();
+            console.warn("AssemblyAI key not found. WebSocket will not send config.");
         }
 
         ws = new WebSocket(WS_URL);
@@ -194,13 +227,13 @@ document.addEventListener("DOMContentLoaded", () => {
                 aai_key: aaiKey,
                 murf_key: murfKey,
                 tavily_key: tavilyKey,
-                gemini_key: geminiKey // NEW: Send Gemini Key
+                gemini_key: geminiKey
             }));
-            updateState("listening");
+            updateState("idle");
         };
         ws.onclose = () => {
-            console.log("❌ WebSocket closed");
-            updateState("idle");
+            console.log("❌ WebSocket closed. Attempting to reconnect...");
+            setTimeout(connectWebSocket, 3000); // Reconnect after 3 seconds
         };
         ws.onerror = (err) => console.error("⚠️ WebSocket error", err);
 
@@ -213,6 +246,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 awaitingLinks = false;
                 addChatMessage("user", msg.text);
                 updateState("thinking");
+                stopMicrophone(); // Ensure microphone is off while thinking
                 startWave();
             } else if (msg.type === "llm_text") {
                 aiAccumulatedText += msg.text;
@@ -234,34 +268,28 @@ document.addEventListener("DOMContentLoaded", () => {
                 handleAudioChunk(msg.chunk_id, msg.audio, msg.final);
             }
         };
+    }
 
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        micCtx = new AudioContext({ sampleRate: 16000 });
-        micSource = micCtx.createMediaStreamSource(stream);
-        micProcessor = micCtx.createScriptProcessor(4096, 1, 1);
-        micSource.connect(micProcessor);
-        micProcessor.connect(micCtx.destination);
-        micProcessor.onaudioprocess = (e) => {
-            const inputData = e.inputBuffer.getChannelData(0);
-            const pcm16 = floatTo16BitPCM(inputData);
-            if (ws && ws.readyState === WebSocket.OPEN) ws.send(pcm16);
-        };
+    async function startRecording() {
+        if (isFirstInteraction) {
+            introMessageDiv.remove();
+            isFirstInteraction = false;
+        }
+
+        if (ws && ws.readyState === WebSocket.CLOSED) {
+            connectWebSocket(); // Reconnect if closed
+        } else if (!ws) {
+            connectWebSocket(); // Initial connection if not established
+        }
+
+        await startMicrophone(); // Start the microphone
     }
 
     function stopRecording() {
+        stopMicrophone(); // Stop the microphone
         if (ws) {
-            ws.close();
-            ws = null;
+            // Keep the WebSocket open, just stop the microphone
         }
-        if (micProcessor) {
-            micProcessor.disconnect();
-            micSource.disconnect();
-            micCtx.close();
-        }
-        if (stream) {
-            stream.getTracks().forEach(track => track.stop());
-        }
-        stopWave();
         updateState("idle");
     }
 
@@ -295,18 +323,19 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // === Button Event Listeners ===
-    startBtn.addEventListener("click", () => {
+    startBtn.addEventListener("click", async () => {
         startBtn.style.display = "none";
         stopBtn.style.display = "inline-block";
-        updateState("listening");
-        startRecording();
+        await startRecording();
     });
+
     stopBtn.addEventListener("click", () => {
         stopRecording();
         startBtn.style.display = "inline-block";
         stopBtn.style.display = "none";
         updateState("idle");
     });
+
     resetBtn.addEventListener("click", () => {
         stopRecording();
         messagesContainer.innerHTML = "";
@@ -324,7 +353,7 @@ document.addEventListener("DOMContentLoaded", () => {
         localStorage.setItem("geminiKey", geminiKeyInput.value); // NEW: Save Gemini Key
         alert("API keys saved successfully!");
     });
-    
+
     // NEW: Sidebar toggle functionality
     toggleSidebarBtn.addEventListener("click", () => {
         appContainer.classList.toggle("sidebar-closed");
@@ -345,8 +374,8 @@ document.addEventListener("DOMContentLoaded", () => {
             messagesContainer.innerHTML = `
                 <div id="chat-start">
                     <div class="intro-message">
-                        <h1>Welcome to NeoChat AI</h1>
-                        <p>Ask me anything. I'm powered by AssemblyAI & Murf.</p>
+                        <h1>Welcome to RanchoBytes AI</h1>
+                        <p>Ask me anything. I'm specialized in AI news.</p>
                     </div>
                 </div>
             `;
@@ -370,5 +399,6 @@ document.addEventListener("DOMContentLoaded", () => {
         geminiKeyInput.value = localStorage.getItem("geminiKey") || ""; // NEW: Load Gemini Key
         updateState("idle");
         initIntroMessage();
+        connectWebSocket(); // This is the new change: connect on page load
     }
 });
