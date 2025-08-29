@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RanchoBytes AI</title>
+
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/styles/atom-one-dark.min.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/4.2.12/marked.min.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+    <div class="container">
+        <div class="app-container">
+            <div class="sidebar">
+                <div class="logo">
+                    <img src="/static/images/chat_logo.jpg" width="50" height="50" alt="">
+                    <span>RanchoBytes</span>
+                </div>
+                
+                <div class="api-key-input">
+                    <label for="aai-key">AssemblyAI Key</label>
+                    <input type="password" id="aai-key" placeholder="Enter your AssemblyAI API Key" />
+                    <label for="murf-key">Murf TTS Key</label>
+                    <input type="password" id="murf-key" placeholder="Enter your Murf API Key" />
+                    <label for="tavily-key">Tavily Key</label>
+                    <input type="password" id="tavily-key" placeholder="Enter your Tavily API Key" />
+                    <label for="gemini-key">Gemini API Key</label>
+                    <input type="password" id="gemini-key" placeholder="Enter your Gemini API Key" />
+                    <button id="save-config-btn">
+                        <i class="fas fa-save"></i>
+                        <span>Save Keys</span>
+                    </button>
+                </div>
+            </div>
+            <div class="chat-container">
+                <button id="toggle-sidebar-btn" class="toggle-sidebar-btn"><i class="fas fa-bars"></i></button>
+                <div class="chat-header">
+                    
+                </div>
+                <div class="messages" id="messages">
+                    <div id="chat-start">
+                        <div class="intro-message">
+                            <h1>Welcome to RanchoBytes AI</h1>
+                            <p>Ask me anything. I'm specialized in AI news.</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="input-area">
+                    <div class="input-container">
+                        <button id="chat-llm-start" title="Start recording">
+                            <i class="fas fa-microphone"></i>
+                        </button>
+                        <button id="chat-llm-stop" title="Stop recording" style="display:none">
+                            <i class="fas fa-stop"></i>
+                        </button>
+                        <div id="chat-llm-status" style="display: none;"></div>
+                        <div id="chat-llm-status-gif" style="text-align:center; display:none;">
+                            <img id="state-gif" src="/static/images/listening.gif" alt="State Animation" width="50">
+                        </div>
+                        <canvas id="chat-llm-waveform" width="300" height="50" style="flex:1;"></canvas>
+                        <button id="chat-llm-reset" title="Reset chat">
+                            <i class="fas fa-redo"></i>
+                        </button>
+                    </div>
+                    <div class="disclaimer">
+                        RanchoBytes can make mistakes.Check important info.
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <audio id="chat-llm-playback" style="display:none"></audio>
+    <script src="/static/script.js"></script>
+</body>
+
+</html>

@@ -28,11 +28,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/")
-def serve_index():
-    return FileResponse(f"{STATIC_DIR}/index.html")
+async def get_index():
+    return FileResponse("static/index.html")
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):

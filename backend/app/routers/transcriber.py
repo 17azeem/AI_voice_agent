@@ -337,12 +337,7 @@ class AssemblyAIStreamingTranscriber:
 
     def stream_audio(self, audio_chunk: bytes):
         if self.client:
-            try:
-                self.client.stream(audio_chunk)
-            except Exception as e:
-                print("❌ Error sending audio:", e)
-        else:
-            print("AAI client not initialized. Cannot stream audio.")
+            self.client.stream(audio_chunk)
 
     def on_termination_event(self, client, event: TerminationEvent):
         print(f"🛑 Session terminated after {event.audio_duration_seconds}s")
