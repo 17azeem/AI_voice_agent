@@ -3,6 +3,7 @@ from google.generativeai.types import GenerationConfig
 from google.generativeai import GenerativeModel
 from google.api_core.exceptions import ResourceExhausted
 import google.generativeai as genai
+from typing import Generator, Any
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ class LLMService:
         )
         self.system_prompt = "You are a helpful AI assistant. Answer concisely and accurately."
 
-    def stream(self, history: list) -> str:
+    def stream(self, history: list) -> Generator[str, None, None]:
         """
         Streams a response from the Gemini model based on chat history.
         Yields tokens one by one.
