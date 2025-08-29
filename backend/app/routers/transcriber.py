@@ -320,6 +320,7 @@ class AssemblyAIStreamingTranscriber:
                 msg = await self.murf_ws.recv()
                 data = json.loads(msg)
                 
+                # Check for "audio" key to send audio to the frontend
                 if "audio" in data:
                     self.murf_chunk_counter += 1
                     await self.websocket.send_json({
@@ -328,13 +329,14 @@ class AssemblyAIStreamingTranscriber:
                         "audio": data["audio"]
                     })
                 
+                # Murf API sends a 'final: true' flag to indicate the end of the stream.
                 if data.get("final"):
+                    # Send a final message to the frontend to signal the end.
                     await self.websocket.send_json({"type": "ai_audio", "final": True})
                     self.murf_chunk_counter = 0
                     break
         except Exception as e:
             print("❌ Murf receive error:", e)
-
     def stream_audio(self, audio_chunk: bytes):
         if self.client:
             self.client.stream(audio_chunk)
