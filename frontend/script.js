@@ -248,6 +248,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 updateState("thinking");
                 stopMicrophone(); // Ensure microphone is off while thinking
                 startWave();
+                playheadTime = 0;
             } else if (msg.type === "llm_text") {
                 aiAccumulatedText += msg.text;
                 addOrUpdateAIMessage(aiAccumulatedText, false);
