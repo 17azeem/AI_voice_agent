@@ -231,7 +231,7 @@ class AssemblyAIStreamingTranscriber:
             return False
         try:
             # Check if Murf WS is already connected and not closed
-            if self.murf_ws and not self.murf_ws.closed:
+            if self.murf_ws and not self.murf_ws.close:
                 return True
             
             # If not, establish a new connection
@@ -353,7 +353,7 @@ class AssemblyAIStreamingTranscriber:
         except Exception as e:
             print("❌ Murf receive error:", e)
         finally:
-            if self.murf_ws and not self.murf_ws.closed:
+            if self.murf_ws and not self.murf_ws.close:
                 await self.murf_ws.close()
             self.murf_ws = None
             
