@@ -1,4 +1,3 @@
-// === Combined script.js (Rewritten Core Functions) ===
 document.addEventListener("DOMContentLoaded", () => {
     // === DOM Elements and State Variables remain the same ===
     const messagesContainer = document.getElementById("messages");
@@ -51,7 +50,7 @@ document.addEventListener("DOMContentLoaded", () => {
     let playheadTime = 0;
     let expectedChunk = 1;
     let chunkBuffer = {};
-    let wavHeaderSet = true;
+    let isSpeaking = false;
 
     let audioQueue = [];
     let isPlaying = false;
@@ -59,8 +58,11 @@ document.addEventListener("DOMContentLoaded", () => {
     // === Core Functions ===
     function base64ToPCMFloat32(base64) {
         let binary = atob(base64);
-        const offset = wavHeaderSet ? 44 : 0;
-        wavHeaderSet = false;
+        const wavHeaderSize = 44;
+        // Check if the received data is a full WAV file with header
+        const isWavFile = binary.length >= wavHeaderSize && binary.startsWith("RIFF");
+        const offset = isWavFile ? wavHeaderSize : 0;
+        
         const length = binary.length - offset;
         const bytes = new Uint8Array(length);
         for (let i = 0; i < bytes.length; i++) {
@@ -78,18 +80,25 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // New function to play the next audio chunk from the queue
     function playNextChunk() {
-        if (isPlaying || audioQueue.length === 0) return;
-        
+        if (isPlaying || audioQueue.length === 0) {
+            // If the queue is empty AND we're finished speaking, switch to idle.
+            if (!isSpeaking) {
+                updateState("idle");
+                stopWave();
+                startMicrophone();
+            }
+            return;
+        }
+
         isPlaying = true;
         
         const float32Array = audioQueue.shift();
 
         if (!audioContext) {
             audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            playheadTime = audioContext.currentTime;
         }
-
-        const buffer = audioContext.createBuffer(1, float32Array.length, SAMPLE_RATE);
+        
+        const buffer = audioContext.createBuffer(1, float32Array.length, audioContext.sampleRate);
         buffer.copyToChannel(float32Array, 0);
         const source = audioContext.createBufferSource();
         source.buffer = buffer;
@@ -106,14 +115,12 @@ document.addEventListener("DOMContentLoaded", () => {
         };
     }
 
-    // REVISED: This function only adds to the queue and triggers playback once.
     function handleAudioChunk(chunkId, base64Audio, isFinal) {
         if (base64Audio) {
-            // Change state to "speaking" and start the waveform ONLY for the first chunk
+            isSpeaking = true;
             if (expectedChunk === 1) {
                 updateState("speaking");
                 startWave();
-                stopMicrophone();
             }
 
             // Add the chunk to the buffer
@@ -135,12 +142,12 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         
         if (isFinal) {
+            isSpeaking = false;
             // Once the final chunk is received and processed, reset and restart listening
             expectedChunk = 1;
             chunkBuffer = {};
-            wavHeaderSet = true;
-            updateState("idle");
-            startMicrophone();
+            // The playNextChunk() function's onended callback will handle the state change back to idle
+            // and the microphone restart after the final chunk plays.
         }
     }
 
@@ -160,7 +167,9 @@ document.addEventListener("DOMContentLoaded", () => {
         if (micProcessor) {
             micProcessor.disconnect();
             micSource.disconnect();
-            micCtx.close();
+            if (micCtx && micCtx.state !== 'closed') {
+                micCtx.close();
+            }
         }
         if (stream) {
             stream.getTracks().forEach(track => track.stop());
@@ -169,6 +178,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
     async function startMicrophone() {
         try {
+            if (stream) {
+                console.log("Microphone is already running.");
+                return;
+            }
             stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             micCtx = new AudioContext({ sampleRate: 16000 });
             micSource = micCtx.createMediaStreamSource(stream);
@@ -208,6 +221,8 @@ document.addEventListener("DOMContentLoaded", () => {
             ctx.clearRect(0, 0, WIDTH, HEIGHT);
             ctx.beginPath();
             const mid = HEIGHT / 2;
+            ctx.strokeStyle = '#4A90E2';
+            ctx.lineWidth = 2;
             for (let x = 0; x < WIDTH; x++) {
                 const y = mid + Math.sin(x / 10 + Date.now() / 100) * 20;
                 ctx.lineTo(x, y);
@@ -263,8 +278,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 awaitingLinks = false;
                 addChatMessage("user", msg.text);
                 updateState("thinking");
-                stopMicrophone();
-                startWave();
+                stopMicrophone(); // Stop mic when AI is about to respond
             } else if (msg.type === "llm_text") {
                 aiAccumulatedText += msg.text;
                 addOrUpdateAIMessage(aiAccumulatedText, false);
@@ -291,6 +305,9 @@ document.addEventListener("DOMContentLoaded", () => {
         if (isFirstInteraction) {
             introMessageDiv.remove();
             isFirstInteraction = false;
+        }
+        if (!audioContext) {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
         }
         await audioContext.resume();
         await startMicrophone();
@@ -351,6 +368,11 @@ document.addEventListener("DOMContentLoaded", () => {
         startBtn.style.display = "inline-block";
         stopBtn.style.display = "none";
         initIntroMessage();
+        // Reset playback state
+        audioQueue = [];
+        isPlaying = false;
+        playheadTime = 0;
+        isSpeaking = false;
     });
 
     saveConfigBtn.addEventListener("click", () => {
