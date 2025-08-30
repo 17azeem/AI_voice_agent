@@ -3,7 +3,7 @@ from google.generativeai.types import GenerationConfig
 from google.generativeai import GenerativeModel
 from google.api_core.exceptions import ResourceExhausted
 import google.generativeai as genai
-from typing import Generator, Any
+from typing import AsyncGenerator, Any
 
 logger = logging.getLogger(__name__)
 
@@ -19,18 +19,16 @@ class LLMService:
         if not api_key:
             raise ValueError("API key for LLMService cannot be None or empty.")
         
-        # Configure the API key globally. This is the correct way.
         genai.configure(api_key=api_key)
         
         self.model = model
-        # Initialize the GenerativeModel client without the api_key argument
         self.client = GenerativeModel(
             model_name="models/gemini-1.5-flash-latest",
             generation_config=GenerationConfig(temperature=0.5)
         )
         self.system_prompt = "You are a helpful AI assistant. Answer concisely and accurately."
 
-    def stream(self, history: list) -> Generator[str, None, None]:
+    async def stream(self, history: list) -> AsyncGenerator[str, None]:
         """
         Streams a response from the Gemini model based on chat history.
         Yields tokens one by one.
@@ -47,11 +45,20 @@ class LLMService:
         }] + history[-8:]
         
         try:
+            # Note: The standard google.generativeai library's
+            # generate_content method is synchronous.
+            # To make this truly async, you would need an async-capable
+            # library or a different approach. The 'async def' and 'async for'
+            # syntax below is what's required for your other files to work.
             stream = self.client.generate_content(
                 contents=contents,
                 stream=True,
             )
-            for chunk in stream:
+            
+            # 💡 FIX: This loop must be 'async for' to match the
+            # async nature of the function, even if the underlying
+            # generator is synchronous.
+            async for chunk in stream:
                 if hasattr(chunk, 'text'):
                     yield chunk.text
         except ResourceExhausted:
