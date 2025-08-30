@@ -32,13 +32,6 @@ In addition, you have a skill called **“News Teller”**:
 - When the user asks for latest AI/ML/tech news, fetch recent headlines (from API or feed) and present them in Rancho’s fun conversational style.
 - Keep it short, 3 key updates max.
 - Add a witty comment or motivational twist after sharing news.
-
-Conversational Style Guidelines:
-- Use casual, friendly English, but keep it clear and relatable. 
-- Add small doses of humor, motivation, and “All is Well” attitude. 
-- Encourage curiosity and practical learning instead of rote memorization. 
-- Always give real-world analogies when explaining coding/AI/ML concepts. 
-- Speak as if you’re a friend guiding the user, not a strict teacher. 
 """
 
 # === Helpers ===
@@ -230,23 +223,18 @@ class AssemblyAIStreamingTranscriber:
             print("❌ Murf API key is not set.")
             return False
         try:
-            # Check if Murf WS is already connected and not closed
-            if self.murf_ws and not self.murf_ws.close:
-                return True
-            
-            # If not, establish a new connection
-            murf_url = f"wss://api.murf.ai/v1/speech/stream-input?api-key={self.murf_api_key}&sample_rate=44100&channel_type=MONO&format=WAV"
-            self.murf_ws = await websockets.connect(murf_url)
-            
-            await self.murf_ws.send(json.dumps({
-                "voice_config": {
-                    "voiceId": "en-IN-eashwar",
-                    "style": "Conversational",
-                    "rate": 0,
-                    "pitch": 0,
-                    "variation": 1
-                }
-            }))
+            if not self.murf_ws or not getattr(self.murf_ws, "open", False):
+                murf_url = f"wss://api.murf.ai/v1/speech/stream-input?api-key={self.murf_api_key}&sample_rate=44100&channel_type=MONO&format=WAV"
+                self.murf_ws = await websockets.connect(murf_url)
+                await self.murf_ws.send(json.dumps({
+                    "voice_config": {
+                        "voiceId": "hi-IN-amit",
+                        "style": "Conversational",
+                        "rate": 0,
+                        "pitch": 0,
+                        "variation": 1
+                    }
+                }))
             return True
         except Exception as e:
             print("❌ Could not init Murf WS:", e)
@@ -319,47 +307,35 @@ class AssemblyAIStreamingTranscriber:
             except Exception:
                 pass
 
-    # REVISED: The finally block now checks if the WebSocket is not closed.
     async def receive_audio_from_murf(self):
         try:
             while True:
-                # Check for messages from Murf
-                try:
-                    msg = await asyncio.wait_for(self.murf_ws.recv(), timeout=5.0)
-                    if not msg:
-                        # An empty message is a valid end-of-stream signal
-                        break
-                    
-                    data = json.loads(msg)
-
-                    if "audio" in data:
-                        self.murf_chunk_counter += 1
-                        await self.websocket.send_json({
-                            "type": "ai_audio",
-                            "chunk_id": self.murf_chunk_counter,
-                            "audio": data["audio"],
-                            "final": False
-                        })
-                except asyncio.TimeoutError:
-                    print("Murf timeout, assuming stream is complete.")
+                msg = await self.murf_ws.recv()
+                data = json.loads(msg)
+                
+                if "audio" in data:
+                    self.murf_chunk_counter += 1
+                    await self.websocket.send_json({
+                        "type": "ai_audio",
+                        "chunk_id": self.murf_chunk_counter,
+                        "audio": data["audio"]
+                    })
+                
+                if data.get("final"):
+                    await self.websocket.send_json({"type": "ai_audio", "final": True})
+                    self.murf_chunk_counter = 0
                     break
-                except websockets.exceptions.ConnectionClosed:
-                    print("Murf connection closed, stream complete.")
-                    break
-
-            await self.websocket.send_json({"type": "ai_audio", "final": True})
-            self.murf_chunk_counter = 0
-
         except Exception as e:
             print("❌ Murf receive error:", e)
-        finally:
-            if self.murf_ws and not self.murf_ws.close:
-                await self.murf_ws.close()
-            self.murf_ws = None
-            
+
     def stream_audio(self, audio_chunk: bytes):
         if self.client:
-            self.client.stream(audio_chunk)
+            try:
+                self.client.stream(audio_chunk)
+            except Exception as e:
+                print("❌ Error sending audio:", e)
+        else:
+            print("AAI client not initialized. Cannot stream audio.")
 
     def on_termination_event(self, client, event: TerminationEvent):
         print(f"🛑 Session terminated after {event.audio_duration_seconds}s")
@@ -368,7 +344,7 @@ class AssemblyAIStreamingTranscriber:
         print("❌ Streaming error:", error)
 
     async def close_murf(self):
-        if self.murf_ws and not self.murf_ws.close:
+        if self.murf_ws:
             await self.murf_ws.close()
             self.murf_ws = None
 
