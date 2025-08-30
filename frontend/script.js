@@ -1,5 +1,6 @@
+// === Combined script.js ===
 document.addEventListener("DOMContentLoaded", () => {
-    // === DOM Elements and State Variables remain the same ===
+    // === DOM Elements from both old and new UIs ===
     const messagesContainer = document.getElementById("messages");
     const chatHistoryContainer = document.getElementById("chat-history");
     const waveformCanvas = document.getElementById("chat-llm-waveform");
@@ -7,25 +8,29 @@ document.addEventListener("DOMContentLoaded", () => {
     const gifWrap = document.getElementById("chat-llm-status-gif");
     const ctx = waveformCanvas.getContext("2d");
 
+    // Your audio control buttons from the old UI, now placed in the new input area
     const startBtn = document.getElementById("chat-llm-start");
     const stopBtn = document.getElementById("chat-llm-stop");
     const resetBtn = document.getElementById("chat-llm-reset");
     const statusDiv = document.getElementById("chat-llm-status");
 
+    // Your API Key Inputs from the old config dialog, now in the sidebar
     const aaiKeyInput = document.getElementById("aai-key");
     const murfKeyInput = document.getElementById("murf-key");
     const tavilyKeyInput = document.getElementById("tavily-key");
-    const geminiKeyInput = document.getElementById("gemini-key");
+    const geminiKeyInput = document.getElementById("gemini-key"); // NEW: Gemini Key Input
     const saveConfigBtn = document.getElementById("save-config-btn");
 
+    // NEW UI ELEMENTS
     const appContainer = document.querySelector(".app-container");
     const toggleSidebarBtn = document.getElementById("toggle-sidebar-btn");
     const introMessageDiv = document.getElementById("chat-start");
 
+    // === State variables ===
     let currentChatId = null;
     let chatHistory = JSON.parse(localStorage.getItem("chatHistory")) || {};
     let currentTheme = localStorage.getItem("theme") || "light";
-    let isTyping = false; // Note: This variable isn't used in the provided code, but remains for context.
+    let isTyping = false;
     let stopGeneration = false;
     let isFirstInteraction = true;
 
@@ -36,6 +41,7 @@ document.addEventListener("DOMContentLoaded", () => {
     let awaitingLinks = false;
     let waveRAF = null;
     let waveActive = false;
+    const SAMPLE_RATE = 44100;
     const WS_URL = "ws://127.0.0.1:8000/ws";
 
     const STATE_GIFS = {
@@ -45,25 +51,18 @@ document.addEventListener("DOMContentLoaded", () => {
         speaking: "/static/images/speaking.gif",
     };
 
+    // Audio decode helpers
     let audioContext;
     let playheadTime = 0;
     let expectedChunk = 1;
     let chunkBuffer = {};
-    let isSpeaking = false;
-
-    let audioQueue = [];
-    let isPlaying = false;
-    let speakingSource = null; // New variable to keep track of the current audio source
+    let wavHeaderSet = true;
 
     // === Core Functions ===
     function base64ToPCMFloat32(base64) {
         let binary = atob(base64);
-        const wavHeader = "RIFF";
-
-        // Use startsWith() for a more robust check for the WAV header
-        const isWavFile = binary.startsWith(wavHeader);
-        const offset = isWavFile ? 44 : 0;
-        
+        const offset = wavHeaderSet ? 44 : 0;
+        wavHeaderSet = false;
         const length = binary.length - offset;
         const bytes = new Uint8Array(length);
         for (let i = 0; i < bytes.length; i++) {
@@ -79,84 +78,43 @@ document.addEventListener("DOMContentLoaded", () => {
         return float32Array;
     }
 
-    // Function to play the next audio chunk from the queue
-    function playNextChunk() {
-        if (isPlaying || audioQueue.length === 0) {
-            // If the queue is empty AND we're finished speaking, switch to idle.
-            // This is a crucial change to ensure the microphone restarts only after the last sound has played.
-            if (audioQueue.length === 0 && !isSpeaking) {
-                updateState("idle");
-                stopWave();
-                startMicrophone();
-            }
-            return;
-        }
-
-        isPlaying = true;
-        
-        const float32Array = audioQueue.shift();
-
+    function playFloat32Array(float32Array) {
         if (!audioContext) {
             audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            playheadTime = audioContext.currentTime;
         }
-        
-        const buffer = audioContext.createBuffer(1, float32Array.length, audioContext.sampleRate);
+        const buffer = audioContext.createBuffer(1, float32Array.length, SAMPLE_RATE);
         buffer.copyToChannel(float32Array, 0);
-        
         const source = audioContext.createBufferSource();
         source.buffer = buffer;
         source.connect(audioContext.destination);
-
         const now = audioContext.currentTime;
         if (playheadTime < now) playheadTime = now + 0.05;
-        
         source.start(playheadTime);
         playheadTime += buffer.duration;
-
-        // Use the onended event listener for a more reliable way to track when a chunk is done playing.
-        source.onended = () => {
-            isPlaying = false;
-            playNextChunk(); // play the next one in the queue
-        };
     }
 
     function handleAudioChunk(chunkId, base64Audio, isFinal) {
         if (base64Audio) {
-            isSpeaking = true;
-            if (expectedChunk === 1) {
-                updateState("speaking");
-                startWave();
-            }
-
-            // Add the chunk to the buffer
+            updateState("speaking");
+            startWave();
             chunkBuffer[chunkId] = base64Audio;
-
-            // Process chunks from the buffer in sequence
             while (chunkBuffer[expectedChunk]) {
                 const b64 = chunkBuffer[expectedChunk];
                 delete chunkBuffer[expectedChunk];
                 const float32Array = base64ToPCMFloat32(b64);
-                if (float32Array) {
-                    audioQueue.push(float32Array); // Enqueue the audio
-                    if (!isPlaying) {
-                        playNextChunk(); // Start playback if it's not already running
-                    }
-                }
+                if (float32Array) playFloat32Array(float32Array);
                 expectedChunk++;
             }
         }
-        
         if (isFinal) {
-            isSpeaking = false;
-            // Once the final chunk is received and processed, reset and restart listening
             expectedChunk = 1;
             chunkBuffer = {};
-            // The playNextChunk() function's onended callback will handle the state change back to idle
-            // and the microphone restart after the final chunk plays.
+            wavHeaderSet = true;
+            updateState("idle");
         }
     }
 
-    // === ALL OTHER FUNCTIONS ARE UNCHANGED ===
     function floatTo16BitPCM(float32Array) {
         const buffer = new ArrayBuffer(float32Array.length * 2);
         const view = new DataView(buffer);
@@ -166,48 +124,6 @@ document.addEventListener("DOMContentLoaded", () => {
             view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
         }
         return buffer;
-    }
-    
-    function stopMicrophone() {
-        if (micProcessor) {
-            micProcessor.disconnect();
-            micSource.disconnect();
-            if (micCtx && micCtx.state !== 'closed') {
-                micCtx.close();
-            }
-        }
-        if (stream) {
-            stream.getTracks().forEach(track => track.stop());
-        }
-        // Ensure the speaking audio stops as well when the microphone is stopped
-        if (speakingSource) {
-            speakingSource.stop();
-        }
-    }
-
-    async function startMicrophone() {
-        try {
-            if (stream) {
-                console.log("Microphone is already running.");
-                return;
-            }
-            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            micCtx = new AudioContext({ sampleRate: 16000 });
-            micSource = micCtx.createMediaStreamSource(stream);
-            micProcessor = micCtx.createScriptProcessor(4096, 1, 1);
-            micSource.connect(micProcessor);
-            micProcessor.connect(micCtx.destination);
-            micProcessor.onaudioprocess = (e) => {
-                const inputData = e.inputBuffer.getChannelData(0);
-                const pcm16 = floatTo16BitPCM(inputData);
-                if (ws && ws.readyState === WebSocket.OPEN) ws.send(pcm16);
-            };
-            updateState("listening");
-        } catch (err) {
-            console.error("Error accessing microphone:", err);
-            updateState("idle");
-            alert("Microphone access was denied. Please allow microphone permissions to use the voice chat feature.");
-        }
     }
 
     function updateState(newState) {
@@ -230,8 +146,6 @@ document.addEventListener("DOMContentLoaded", () => {
             ctx.clearRect(0, 0, WIDTH, HEIGHT);
             ctx.beginPath();
             const mid = HEIGHT / 2;
-            ctx.strokeStyle = '#4A90E2';
-            ctx.lineWidth = 2;
             for (let x = 0; x < WIDTH; x++) {
                 const y = mid + Math.sin(x / 10 + Date.now() / 100) * 20;
                 ctx.lineTo(x, y);
@@ -274,7 +188,7 @@ document.addEventListener("DOMContentLoaded", () => {
         };
         ws.onclose = () => {
             console.log("❌ WebSocket closed. Attempting to reconnect...");
-            setTimeout(connectWebSocket, 3000);
+            setTimeout(connectWebSocket, 3000); // Reconnect after 3 seconds
         };
         ws.onerror = (err) => console.error("⚠️ WebSocket error", err);
 
@@ -287,7 +201,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 awaitingLinks = false;
                 addChatMessage("user", msg.text);
                 updateState("thinking");
-                stopMicrophone(); // Stop mic when AI is about to respond
+                startWave();
             } else if (msg.type === "llm_text") {
                 aiAccumulatedText += msg.text;
                 addOrUpdateAIMessage(aiAccumulatedText, false);
@@ -315,15 +229,44 @@ document.addEventListener("DOMContentLoaded", () => {
             introMessageDiv.remove();
             isFirstInteraction = false;
         }
+
         if (!audioContext) {
             audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            await audioContext.resume();
         }
-        await audioContext.resume();
-        await startMicrophone();
+
+        if (ws && ws.readyState === WebSocket.CLOSED) {
+            connectWebSocket(); // Reconnect if closed
+        } else if (!ws) {
+            connectWebSocket(); // Initial connection if not established
+        }
+
+        // Handle microphone stream
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        micCtx = new AudioContext({ sampleRate: 16000 });
+        micSource = micCtx.createMediaStreamSource(stream);
+        micProcessor = micCtx.createScriptProcessor(4096, 1, 1);
+        micSource.connect(micProcessor);
+        micProcessor.connect(micCtx.destination);
+        micProcessor.onaudioprocess = (e) => {
+            const inputData = e.inputBuffer.getChannelData(0);
+            const pcm16 = floatTo16BitPCM(inputData);
+            if (ws && ws.readyState === WebSocket.OPEN) ws.send(pcm16);
+        };
+
+        updateState("listening");
     }
 
     function stopRecording() {
-        stopMicrophone();
+        if (micProcessor) {
+            micProcessor.disconnect();
+            micSource.disconnect();
+            micCtx.close();
+        }
+        if (stream) {
+            stream.getTracks().forEach(track => track.stop());
+        }
+        stopWave();
         updateState("idle");
     }
 
@@ -357,10 +300,10 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // === Button Event Listeners ===
-    startBtn.addEventListener("click", async () => {
+    startBtn.addEventListener("click", () => {
         startBtn.style.display = "none";
         stopBtn.style.display = "inline-block";
-        await startRecording();
+        startRecording();
     });
 
     stopBtn.addEventListener("click", () => {
@@ -377,21 +320,18 @@ document.addEventListener("DOMContentLoaded", () => {
         startBtn.style.display = "inline-block";
         stopBtn.style.display = "none";
         initIntroMessage();
-        // Reset playback state
-        audioQueue = [];
-        isPlaying = false;
-        playheadTime = 0;
-        isSpeaking = false;
     });
 
+    // API key saving
     saveConfigBtn.addEventListener("click", () => {
         localStorage.setItem("aaiKey", aaiKeyInput.value);
         localStorage.setItem("murfKey", murfKeyInput.value);
         localStorage.setItem("tavilyKey", tavilyKeyInput.value);
-        localStorage.setItem("geminiKey", geminiKeyInput.value);
+        localStorage.setItem("geminiKey", geminiKeyInput.value); // NEW: Save Gemini Key
         alert("API keys saved successfully!");
     });
 
+    // NEW: Sidebar toggle functionality
     toggleSidebarBtn.addEventListener("click", () => {
         appContainer.classList.toggle("sidebar-closed");
         const icon = toggleSidebarBtn.querySelector("i");
@@ -411,8 +351,8 @@ document.addEventListener("DOMContentLoaded", () => {
             messagesContainer.innerHTML = `
                 <div id="chat-start">
                     <div class="intro-message">
-                        <h1>Welcome to RanchoBytes AI</h1>
-                        <p>Ask me anything. I'm specialized in AI news.</p>
+                        <h1>Welcome to NeoChat AI</h1>
+                        <p>Ask me anything. I'm powered by AssemblyAI & Murf.</p>
                     </div>
                 </div>
             `;
@@ -429,15 +369,13 @@ document.addEventListener("DOMContentLoaded", () => {
     init();
 
     function init() {
+        // Load saved keys on page load
         aaiKeyInput.value = localStorage.getItem("aaiKey") || "";
         murfKeyInput.value = localStorage.getItem("murfKey") || "";
         tavilyKeyInput.value = localStorage.getItem("tavilyKey") || "";
-        geminiKeyInput.value = localStorage.getItem("geminiKey") || "";
+        geminiKeyInput.value = localStorage.getItem("geminiKey") || ""; // NEW: Load Gemini Key
         updateState("idle");
         initIntroMessage();
-        
-        audioContext = new (window.AudioContext || window.webkitAudioContext)();
-
-        connectWebSocket();
+        connectWebSocket(); // This is the new change: connect on page load
     }
 });
