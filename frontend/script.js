@@ -1,6 +1,6 @@
-// === Combined script.js ===
+// === Combined script.js (Rewritten Core Functions) ===
 document.addEventListener("DOMContentLoaded", () => {
-    // === DOM Elements from both old and new UIs ===
+    // === DOM Elements and State Variables remain the same ===
     const messagesContainer = document.getElementById("messages");
     const chatHistoryContainer = document.getElementById("chat-history");
     const waveformCanvas = document.getElementById("chat-llm-waveform");
@@ -8,25 +8,21 @@ document.addEventListener("DOMContentLoaded", () => {
     const gifWrap = document.getElementById("chat-llm-status-gif");
     const ctx = waveformCanvas.getContext("2d");
 
-    // Your audio control buttons from the old UI, now placed in the new input area
     const startBtn = document.getElementById("chat-llm-start");
     const stopBtn = document.getElementById("chat-llm-stop");
     const resetBtn = document.getElementById("chat-llm-reset");
     const statusDiv = document.getElementById("chat-llm-status");
 
-    // Your API Key Inputs from the old config dialog, now in the sidebar
     const aaiKeyInput = document.getElementById("aai-key");
     const murfKeyInput = document.getElementById("murf-key");
     const tavilyKeyInput = document.getElementById("tavily-key");
-    const geminiKeyInput = document.getElementById("gemini-key"); // NEW: Gemini Key Input
+    const geminiKeyInput = document.getElementById("gemini-key");
     const saveConfigBtn = document.getElementById("save-config-btn");
 
-    // NEW UI ELEMENTS
     const appContainer = document.querySelector(".app-container");
     const toggleSidebarBtn = document.getElementById("toggle-sidebar-btn");
     const introMessageDiv = document.getElementById("chat-start");
 
-    // === State variables ===
     let currentChatId = null;
     let chatHistory = JSON.parse(localStorage.getItem("chatHistory")) || {};
     let currentTheme = localStorage.getItem("theme") || "light";
@@ -51,14 +47,12 @@ document.addEventListener("DOMContentLoaded", () => {
         speaking: "/static/images/speaking.gif",
     };
 
-    // Audio decode helpers
     let audioContext;
     let playheadTime = 0;
     let expectedChunk = 1;
     let chunkBuffer = {};
     let wavHeaderSet = true;
 
-    // A more robust audio playback queue
     let audioQueue = [];
     let isPlaying = false;
 
@@ -84,66 +78,73 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // New function to play the next audio chunk from the queue
     function playNextChunk() {
-    if (isPlaying || audioQueue.length === 0) return;
-    isPlaying = true;
+        if (isPlaying || audioQueue.length === 0) return;
+        
+        isPlaying = true;
+        
+        const float32Array = audioQueue.shift();
 
-    const float32Array = audioQueue.shift();
-    if (!audioContext) {
-        audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        playheadTime = audioContext.currentTime;
-    }
-
-    const buffer = audioContext.createBuffer(1, float32Array.length, SAMPLE_RATE);
-    buffer.copyToChannel(float32Array, 0);
-    const source = audioContext.createBufferSource();
-    source.buffer = buffer;
-    source.connect(audioContext.destination);
-
-    const now = audioContext.currentTime;
-    if (playheadTime < now) playheadTime = now + 0.05;
-    source.start(playheadTime);
-    playheadTime += buffer.duration;
-
-    source.onended = () => {
-        isPlaying = false;
-        playNextChunk(); // play next one
-    };
-}
-
-function handleAudioChunk(chunkId, base64Audio, isFinal) {
-    if (base64Audio) {
-        // Change state to "speaking" and start the waveform ONLY for the first chunk
-        if (expectedChunk === 1) {
-            updateState("speaking");
-            startWave();
-            stopMicrophone();
+        if (!audioContext) {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            playheadTime = audioContext.currentTime;
         }
 
-        // Add chunk to the buffer
-        chunkBuffer[chunkId] = base64Audio;
+        const buffer = audioContext.createBuffer(1, float32Array.length, SAMPLE_RATE);
+        buffer.copyToChannel(float32Array, 0);
+        const source = audioContext.createBufferSource();
+        source.buffer = buffer;
+        source.connect(audioContext.destination);
 
-        // Play chunks in sequence from the buffer
-        while (chunkBuffer[expectedChunk]) {
-            const b64 = chunkBuffer[expectedChunk];
-            delete chunkBuffer[expectedChunk];
-            const float32Array = base64ToPCMFloat32(b64);
-            if (float32Array) {
-                audioQueue.push(float32Array);  // enqueue here
-                playNextChunk();                // trigger playback
+        const now = audioContext.currentTime;
+        if (playheadTime < now) playheadTime = now + 0.05;
+        source.start(playheadTime);
+        playheadTime += buffer.duration;
+
+        source.onended = () => {
+            isPlaying = false;
+            playNextChunk(); // play the next one in the queue
+        };
+    }
+
+    // REVISED: This function only adds to the queue and triggers playback once.
+    function handleAudioChunk(chunkId, base64Audio, isFinal) {
+        if (base64Audio) {
+            // Change state to "speaking" and start the waveform ONLY for the first chunk
+            if (expectedChunk === 1) {
+                updateState("speaking");
+                startWave();
+                stopMicrophone();
             }
-            expectedChunk++;
+
+            // Add the chunk to the buffer
+            chunkBuffer[chunkId] = base64Audio;
+
+            // Process chunks from the buffer in sequence
+            while (chunkBuffer[expectedChunk]) {
+                const b64 = chunkBuffer[expectedChunk];
+                delete chunkBuffer[expectedChunk];
+                const float32Array = base64ToPCMFloat32(b64);
+                if (float32Array) {
+                    audioQueue.push(float32Array); // Enqueue the audio
+                    if (!isPlaying) {
+                        playNextChunk(); // Start playback if it's not already running
+                    }
+                }
+                expectedChunk++;
+            }
+        }
+        
+        if (isFinal) {
+            // Once the final chunk is received and processed, reset and restart listening
+            expectedChunk = 1;
+            chunkBuffer = {};
+            wavHeaderSet = true;
+            updateState("idle");
+            startMicrophone();
         }
     }
 
-    if (isFinal) {
-        expectedChunk = 1;
-        chunkBuffer = {};
-        wavHeaderSet = true;
-        updateState("idle");
-        startMicrophone();
-    }
-}
-
+    // === ALL OTHER FUNCTIONS ARE UNCHANGED ===
     function floatTo16BitPCM(float32Array) {
         const buffer = new ArrayBuffer(float32Array.length * 2);
         const view = new DataView(buffer);
@@ -154,8 +155,7 @@ function handleAudioChunk(chunkId, base64Audio, isFinal) {
         }
         return buffer;
     }
-
-    // NEW: Dedicated function to stop microphone input
+    
     function stopMicrophone() {
         if (micProcessor) {
             micProcessor.disconnect();
@@ -167,7 +167,6 @@ function handleAudioChunk(chunkId, base64Audio, isFinal) {
         }
     }
 
-    // NEW: Dedicated function to start microphone input
     async function startMicrophone() {
         try {
             stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -251,7 +250,7 @@ function handleAudioChunk(chunkId, base64Audio, isFinal) {
         };
         ws.onclose = () => {
             console.log("❌ WebSocket closed. Attempting to reconnect...");
-            setTimeout(connectWebSocket, 3000); // Reconnect after 3 seconds
+            setTimeout(connectWebSocket, 3000);
         };
         ws.onerror = (err) => console.error("⚠️ WebSocket error", err);
 
@@ -264,7 +263,7 @@ function handleAudioChunk(chunkId, base64Audio, isFinal) {
                 awaitingLinks = false;
                 addChatMessage("user", msg.text);
                 updateState("thinking");
-                stopMicrophone(); // Ensure microphone is off while thinking
+                stopMicrophone();
                 startWave();
             } else if (msg.type === "llm_text") {
                 aiAccumulatedText += msg.text;
@@ -293,12 +292,12 @@ function handleAudioChunk(chunkId, base64Audio, isFinal) {
             introMessageDiv.remove();
             isFirstInteraction = false;
         }
-        await audioContext.resume(); // Ensure audio context is resumed before starting
-        await startMicrophone(); // Start the microphone
+        await audioContext.resume();
+        await startMicrophone();
     }
 
     function stopRecording() {
-        stopMicrophone(); // Stop the microphone
+        stopMicrophone();
         updateState("idle");
     }
 
@@ -354,16 +353,14 @@ function handleAudioChunk(chunkId, base64Audio, isFinal) {
         initIntroMessage();
     });
 
-    // API key saving
     saveConfigBtn.addEventListener("click", () => {
         localStorage.setItem("aaiKey", aaiKeyInput.value);
         localStorage.setItem("murfKey", murfKeyInput.value);
         localStorage.setItem("tavilyKey", tavilyKeyInput.value);
-        localStorage.setItem("geminiKey", geminiKeyInput.value); // NEW: Save Gemini Key
+        localStorage.setItem("geminiKey", geminiKeyInput.value);
         alert("API keys saved successfully!");
     });
 
-    // NEW: Sidebar toggle functionality
     toggleSidebarBtn.addEventListener("click", () => {
         appContainer.classList.toggle("sidebar-closed");
         const icon = toggleSidebarBtn.querySelector("i");
@@ -401,17 +398,15 @@ function handleAudioChunk(chunkId, base64Audio, isFinal) {
     init();
 
     function init() {
-        // Load saved keys on page load
         aaiKeyInput.value = localStorage.getItem("aaiKey") || "";
         murfKeyInput.value = localStorage.getItem("murfKey") || "";
         tavilyKeyInput.value = localStorage.getItem("tavilyKey") || "";
-        geminiKeyInput.value = localStorage.getItem("geminiKey") || ""; // NEW: Load Gemini Key
+        geminiKeyInput.value = localStorage.getItem("geminiKey") || "";
         updateState("idle");
         initIntroMessage();
         
-        // THIS IS THE KEY CHANGE
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
 
-        connectWebSocket(); // This is the new change: connect on page load
+        connectWebSocket();
     }
 });
