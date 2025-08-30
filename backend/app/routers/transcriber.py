@@ -368,7 +368,7 @@ class AssemblyAIStreamingTranscriber:
         print("❌ Streaming error:", error)
 
     async def close_murf(self):
-        if self.murf_ws and not self.murf_ws.closed:
+        if self.murf_ws and not self.murf_ws.close:
             await self.murf_ws.close()
             self.murf_ws = None
 
