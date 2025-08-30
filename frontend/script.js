@@ -54,18 +54,23 @@ document.addEventListener("DOMContentLoaded", () => {
         speaking: "/static/images/speaking.gif",
     };
 
-    // Audio decode helpers
+    // Audio playback state
+    let audioQueue = [];
+    let isPlaying = false;
     let audioContext;
-    let playheadTime = 0;
-    let expectedChunk = 1;
-    let chunkBuffer = {};
-    let wavHeaderSet = true;
+    let isSpeaking = false;
 
-    // === Core Functions from Old Code ===
+
+    // === Core Functions ===
     function base64ToPCMFloat32(base64) {
         let binary = atob(base64);
-        const offset = wavHeaderSet ? 44 : 0;
-        wavHeaderSet = false;
+        const header = binary.slice(0, 4);
+        const hasHeader = header === "RIFF";
+        const offset = hasHeader ? 44 : 0;
+        if (hasHeader) {
+            console.log("DEBUG: Found WAV header, stripping it.");
+        }
+        
         const length = binary.length - offset;
         const bytes = new Uint8Array(length);
         for (let i = 0; i < bytes.length; i++) {
@@ -81,40 +86,74 @@ document.addEventListener("DOMContentLoaded", () => {
         return float32Array;
     }
 
-    function playFloat32Array(float32Array) {
-        if (!audioContext) {
-            audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            playheadTime = audioContext.currentTime;
-        }
-        const buffer = audioContext.createBuffer(1, float32Array.length, SAMPLE_RATE);
-        buffer.copyToChannel(float32Array, 0);
-        const source = audioContext.createBufferSource();
-        source.buffer = buffer;
-        source.connect(audioContext.destination);
-        const now = audioContext.currentTime;
-        if (playheadTime < now) playheadTime = now + 0.05;
-        source.start(playheadTime);
-        playheadTime += buffer.duration;
-    }
+    function playNextChunk() {
+        if (audioQueue.length > 0 && !isPlaying) {
+            isPlaying = true;
+            console.log("DEBUG: Playing next chunk from queue. Chunks remaining:", audioQueue.length);
+            const float32Array = audioQueue.shift();
+            
+            const buffer = audioContext.createBuffer(1, float32Array.length, SAMPLE_RATE);
+            buffer.copyToChannel(float32Array, 0);
+            
+            const source = audioContext.createBufferSource();
+            source.buffer = buffer;
+            source.connect(audioContext.destination);
 
-    function handleAudioChunk(chunkId, base64Audio, isFinal) {
-        if (base64Audio) {
+            let now = audioContext.currentTime;
+            let scheduledTime = now;
+            
+            // Check if a previous chunk is still playing
+            if (source.buffer.duration > 0 && source.buffer.duration < now - scheduledTime) {
+                scheduledTime = now;
+            } else {
+                scheduledTime = now + 0.05;
+            }
+            
+            source.onended = () => {
+                isPlaying = false;
+                if (audioQueue.length > 0) {
+                    playNextChunk();
+                } else if (!isSpeaking) {
+                    console.log("DEBUG: Audio queue empty and speaking finished. Restarting microphone.");
+                    startRecording();
+                }
+            };
+            
+            source.start(scheduledTime);
             updateState("speaking");
             startWave();
-            chunkBuffer[chunkId] = base64Audio;
-            while (chunkBuffer[expectedChunk]) {
-                const b64 = chunkBuffer[expectedChunk];
-                delete chunkBuffer[expectedChunk];
-                const float32Array = base64ToPCMFloat32(b64);
-                if (float32Array) playFloat32Array(float32Array);
-                expectedChunk++;
-            }
-        }
-        if (isFinal) {
-            expectedChunk = 1;
-            chunkBuffer = {};
-            wavHeaderSet = true;
+        } else if (isSpeaking && audioQueue.length === 0) {
+            // Wait for the next chunk
+            console.log("DEBUG: Waiting for next audio chunk. Queue is empty.");
+        } else if (!isSpeaking && audioQueue.length === 0) {
+            console.log("DEBUG: Audio stream and queue finished. Setting to idle.");
             updateState("idle");
+        }
+    }
+
+
+    function handleAudioChunk(base64Audio, isFinal) {
+        if (isFinal) {
+            isSpeaking = false;
+            console.log("DEBUG: Received final audio message.");
+            if (audioQueue.length === 0) {
+                // All chunks played and stream is final, now safe to stop playback and restart mic
+                console.log("DEBUG: Final audio message received and queue is empty. Transition to idle/listening.");
+                updateState("idle");
+            }
+            return;
+        }
+        
+        if (base64Audio) {
+            isSpeaking = true;
+            console.log("DEBUG: Received new audio chunk.");
+            const float32Array = base64ToPCMFloat32(base64Audio);
+            if (float32Array) {
+                audioQueue.push(float32Array);
+                if (!isPlaying) {
+                    playNextChunk();
+                }
+            }
         }
     }
 
@@ -166,6 +205,11 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     async function startRecording() {
+        if (isSpeaking || audioQueue.length > 0) {
+            console.log("DEBUG: Cannot start mic. Bot is still speaking or queue is not empty.");
+            return;
+        }
+
         if (isFirstInteraction) {
             introMessageDiv.remove();
             isFirstInteraction = false;
@@ -185,6 +229,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!audioContext) {
             audioContext = new (window.AudioContext || window.webkitAudioContext)();
             await audioContext.resume();
+            console.log("DEBUG: AudioContext created and resumed.");
         }
 
         ws = new WebSocket(WS_URL);
@@ -233,7 +278,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 awaitingLinks = false;
                 currentAIBubble = null;
             } else if (msg.type === "ai_audio") {
-                handleAudioChunk(msg.chunk_id, msg.audio, msg.final);
+                // Handle audio chunks and queue them
+                handleAudioChunk(msg.audio, msg.final);
             }
         };
 
@@ -347,7 +393,7 @@ document.addEventListener("DOMContentLoaded", () => {
             messagesContainer.innerHTML = `
                 <div id="chat-start">
                     <div class="intro-message">
-                       <h1>Welcome to RanchoBytes AI</h1>
+                        <h1>Welcome to RanchoBytes AI</h1>
                         <p>Ask me anything. I'm specialized in AI news.</p>
                     </div>
                 </div>
