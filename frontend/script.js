@@ -347,8 +347,8 @@ document.addEventListener("DOMContentLoaded", () => {
             messagesContainer.innerHTML = `
                 <div id="chat-start">
                     <div class="intro-message">
-                        <h1>Welcome to NeoChat AI</h1>
-                        <p>Ask me anything. I'm powered by AssemblyAI & Murf.</p>
+                       <h1>Welcome to RanchoBytes AI</h1>
+                        <p>Ask me anything. I'm specialized in AI news.</p>
                     </div>
                 </div>
             `;

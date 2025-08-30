@@ -69,5 +69,5 @@ async def websocket_endpoint(websocket: WebSocket):
         print(f"❌ An error occurred: {e}")
     finally:
         print("🧹 Cleaning up transcriber resources.")
-        transcriber.close()
-        await transcriber.close_murf()
+        await transcriber.close()
+        
