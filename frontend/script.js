@@ -112,31 +112,35 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // NEW: Function to manage the audio chunks
     function handleAudioChunk(chunkId, base64Audio, isFinal) {
-        if (base64Audio) {
-            // New logic: stop the microphone right before playing the first audio chunk
-            if (expectedChunk === 1) {
-                stopMicrophone();
-            }
+    if (base64Audio) {
+        // Change state to "speaking" and start the waveform ONLY for the first chunk
+        if (expectedChunk === 1) {
             updateState("speaking");
             startWave();
-            const float32Array = base64ToPCMFloat32(base64Audio);
-            if (float32Array) {
-                audioQueue.push(float32Array);
-                if (!isPlaying) {
-                    playNextChunk(); // Start playing if nothing is currently playing
-                }
-            }
-            expectedChunk++; // Increment to handle the next chunk
+            stopMicrophone(); // Crucial: Stop listening while the bot is speaking
         }
-        if (isFinal) {
-            expectedChunk = 1;
-            chunkBuffer = {};
-            wavHeaderSet = true;
-            updateState("idle");
-            // New logic: restart the microphone after the final audio chunk is processed
-            startMicrophone();
+        
+        // Add chunk to the buffer
+        chunkBuffer[chunkId] = base64Audio;
+
+        // Play chunks in sequence from the buffer
+        while (chunkBuffer[expectedChunk]) {
+            const b64 = chunkBuffer[expectedChunk];
+            delete chunkBuffer[expectedChunk];
+            const float32Array = base64ToPCMFloat32(b64);
+            if (float32Array) playFloat32Array(float32Array);
+            expectedChunk++;
         }
     }
+    if (isFinal) {
+        // This logic is triggered only once when all chunks are received
+        expectedChunk = 1;
+        chunkBuffer = {};
+        wavHeaderSet = true;
+        updateState("idle");
+        startMicrophone(); // Restart the microphone once speech is complete
+    }
+}
 
     function floatTo16BitPCM(float32Array) {
         const buffer = new ArrayBuffer(float32Array.length * 2);
