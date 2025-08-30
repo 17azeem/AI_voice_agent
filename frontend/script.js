@@ -84,42 +84,41 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // New function to play the next audio chunk from the queue
     function playNextChunk() {
-        if (audioQueue.length > 0 && !isPlaying) {
-            isPlaying = true;
-            const float32Array = audioQueue.shift();
+    if (isPlaying || audioQueue.length === 0) return;
+    isPlaying = true;
 
-            const buffer = audioContext.createBuffer(1, float32Array.length, SAMPLE_RATE);
-            buffer.copyToChannel(float32Array, 0);
-            const source = audioContext.createBufferSource();
-            source.buffer = buffer;
-            source.connect(audioContext.destination);
-
-            const now = audioContext.currentTime;
-            if (playheadTime < now) {
-                playheadTime = now + 0.05;
-            }
-
-            source.start(playheadTime);
-            playheadTime += buffer.duration;
-
-            // Set a flag to handle the end of this chunk
-            source.onended = () => {
-                isPlaying = false;
-                playNextChunk();
-            };
-        }
+    const float32Array = audioQueue.shift();
+    if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        playheadTime = audioContext.currentTime;
     }
 
-    // NEW: Function to manage the audio chunks
-    function handleAudioChunk(chunkId, base64Audio, isFinal) {
+    const buffer = audioContext.createBuffer(1, float32Array.length, SAMPLE_RATE);
+    buffer.copyToChannel(float32Array, 0);
+    const source = audioContext.createBufferSource();
+    source.buffer = buffer;
+    source.connect(audioContext.destination);
+
+    const now = audioContext.currentTime;
+    if (playheadTime < now) playheadTime = now + 0.05;
+    source.start(playheadTime);
+    playheadTime += buffer.duration;
+
+    source.onended = () => {
+        isPlaying = false;
+        playNextChunk(); // play next one
+    };
+}
+
+function handleAudioChunk(chunkId, base64Audio, isFinal) {
     if (base64Audio) {
         // Change state to "speaking" and start the waveform ONLY for the first chunk
         if (expectedChunk === 1) {
             updateState("speaking");
             startWave();
-            stopMicrophone(); // Crucial: Stop listening while the bot is speaking
+            stopMicrophone();
         }
-        
+
         // Add chunk to the buffer
         chunkBuffer[chunkId] = base64Audio;
 
@@ -128,17 +127,20 @@ document.addEventListener("DOMContentLoaded", () => {
             const b64 = chunkBuffer[expectedChunk];
             delete chunkBuffer[expectedChunk];
             const float32Array = base64ToPCMFloat32(b64);
-            if (float32Array) playFloat32Array(float32Array);
+            if (float32Array) {
+                audioQueue.push(float32Array);  // enqueue here
+                playNextChunk();                // trigger playback
+            }
             expectedChunk++;
         }
     }
+
     if (isFinal) {
-        // This logic is triggered only once when all chunks are received
         expectedChunk = 1;
         chunkBuffer = {};
         wavHeaderSet = true;
         updateState("idle");
-        startMicrophone(); // Restart the microphone once speech is complete
+        startMicrophone();
     }
 }
 
