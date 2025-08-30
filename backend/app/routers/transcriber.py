@@ -81,7 +81,8 @@ def _clean_title(title: str):
         return title[:137] + "..."
     return title
 
-def fetch_ai_ml_news():
+# === Corrected Helpers ===
+async def fetch_ai_ml_news():
     global tavily_client
     if not tavily_client:
         print("DEBUG: Tavily client not configured.")
@@ -140,7 +141,8 @@ def fetch_ai_ml_news():
         summary_chunks = []
         try:
             print("DEBUG: Starting LLM stream for news summary.")
-            for chunk in llm_service.stream(history_for_llm):
+            # 💡 FIX: Use async for with the async generator
+            async for chunk in llm_service.stream(history_for_llm):
                 if chunk:
                     summary_chunks.append(chunk)
             print("DEBUG: LLM stream for news summary completed.")
@@ -154,7 +156,6 @@ def fetch_ai_ml_news():
     except Exception as e:
         print("❌ Tavily error:", e)
         return "Sorry yaar, AI/ML news fetch karne mein gadbad ho gayi.", []
-
 # === Main Class ===
 class AssemblyAIStreamingTranscriber:
     def __init__(self, websocket: WebSocket, loop):
@@ -283,7 +284,7 @@ class AssemblyAIStreamingTranscriber:
 
             if any(k in user_text.lower() for k in ["ai news", "ml news", "tech news", "latest ai", "latest ml"]):
                 print("DEBUG: User asked for news. Fetching news.")
-                final_text, links = fetch_ai_ml_news()
+                final_text, links =await fetch_ai_ml_news()
                 await self.websocket.send_json({
                     "type": "llm_text_final",
                     "text": final_text,
