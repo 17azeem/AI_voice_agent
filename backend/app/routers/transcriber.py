@@ -319,12 +319,17 @@ class AssemblyAIStreamingTranscriber:
             except Exception:
                 pass
 
+    # REVISED: The finally block now checks if the WebSocket is not closed.
     async def receive_audio_from_murf(self):
         try:
             while True:
                 # Check for messages from Murf
                 try:
                     msg = await asyncio.wait_for(self.murf_ws.recv(), timeout=5.0)
+                    if not msg:
+                        # An empty message is a valid end-of-stream signal
+                        break
+                    
                     data = json.loads(msg)
 
                     if "audio" in data:
@@ -333,28 +338,25 @@ class AssemblyAIStreamingTranscriber:
                             "type": "ai_audio",
                             "chunk_id": self.murf_chunk_counter,
                             "audio": data["audio"],
-                            "final": False # Explicitly set final to False for all chunks
+                            "final": False
                         })
                 except asyncio.TimeoutError:
-                    # No new data in 5 seconds, Murf is likely done sending.
                     print("Murf timeout, assuming stream is complete.")
                     break
                 except websockets.exceptions.ConnectionClosed:
-                    # The connection was closed by the Murf server, which signals the end
                     print("Murf connection closed, stream complete.")
                     break
 
-            # After the loop breaks, send the final message and reset the counter
             await self.websocket.send_json({"type": "ai_audio", "final": True})
             self.murf_chunk_counter = 0
 
         except Exception as e:
             print("❌ Murf receive error:", e)
         finally:
-            # Ensure the Murf WebSocket is closed on our side as well
-            if self.murf_ws and self.murf_ws.open:
+            if self.murf_ws and not self.murf_ws.closed:
                 await self.murf_ws.close()
             self.murf_ws = None
+            
     def stream_audio(self, audio_chunk: bytes):
         if self.client:
             self.client.stream(audio_chunk)
@@ -366,7 +368,7 @@ class AssemblyAIStreamingTranscriber:
         print("❌ Streaming error:", error)
 
     async def close_murf(self):
-        if self.murf_ws:
+        if self.murf_ws and not self.murf_ws.closed:
             await self.murf_ws.close()
             self.murf_ws = None
 
