@@ -3,11 +3,14 @@ document.addEventListener("DOMContentLoaded", () => {
     // === DOM Elements from both old and new UIs ===
     const messagesContainer = document.getElementById("messages");
     const chatHistoryContainer = document.getElementById("chat-history");
+    const exportChatButton = document.getElementById("export-chat");
+    const regenerateResponseButton = document.getElementById("regenerate-response");
+    const stopResponseButton = document.getElementById("stop-response");
     const waveformCanvas = document.getElementById("chat-llm-waveform");
     const stateGif = document.getElementById("state-gif");
     const gifWrap = document.getElementById("chat-llm-status-gif");
     const ctx = waveformCanvas.getContext("2d");
-
+    
     // Your audio control buttons from the old UI, now placed in the new input area
     const startBtn = document.getElementById("chat-llm-start");
     const stopBtn = document.getElementById("chat-llm-stop");
@@ -58,7 +61,7 @@ document.addEventListener("DOMContentLoaded", () => {
     let chunkBuffer = {};
     let wavHeaderSet = true;
 
-    // === Core Functions ===
+    // === Core Functions from Old Code ===
     function base64ToPCMFloat32(base64) {
         let binary = atob(base64);
         const offset = wavHeaderSet ? 44 : 0;
@@ -162,15 +165,26 @@ document.addEventListener("DOMContentLoaded", () => {
         ctx.clearRect(0, 0, waveformCanvas.width, waveformCanvas.height);
     }
 
-    function connectWebSocket() {
-        console.log("Connecting WebSocket:", WS_URL);
+    async function startRecording() {
+        if (isFirstInteraction) {
+            introMessageDiv.remove();
+            isFirstInteraction = false;
+        }
+
+        console.log("🎤 Starting recording, connecting to WebSocket:", WS_URL);
         const aaiKey = localStorage.getItem("aaiKey");
         const murfKey = localStorage.getItem("murfKey");
         const tavilyKey = localStorage.getItem("tavilyKey");
-        const geminiKey = localStorage.getItem("geminiKey");
+        const geminiKey = localStorage.getItem("geminiKey"); // NEW: Get Gemini Key
 
         if (!aaiKey) {
-            console.warn("AssemblyAI key not found. WebSocket will not send config.");
+            alert("Please enter your AssemblyAI API key in the sidebar.");
+            return;
+        }
+
+        if (!audioContext) {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            await audioContext.resume();
         }
 
         ws = new WebSocket(WS_URL);
@@ -182,13 +196,13 @@ document.addEventListener("DOMContentLoaded", () => {
                 aai_key: aaiKey,
                 murf_key: murfKey,
                 tavily_key: tavilyKey,
-                gemini_key: geminiKey
+                gemini_key: geminiKey // NEW: Send Gemini Key
             }));
-            updateState("idle");
+            updateState("listening");
         };
         ws.onclose = () => {
-            console.log("❌ WebSocket closed. Attempting to reconnect...");
-            setTimeout(connectWebSocket, 3000); // Reconnect after 3 seconds
+            console.log("❌ WebSocket closed");
+            updateState("idle");
         };
         ws.onerror = (err) => console.error("⚠️ WebSocket error", err);
 
@@ -222,26 +236,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 handleAudioChunk(msg.chunk_id, msg.audio, msg.final);
             }
         };
-    }
 
-    async function startRecording() {
-        if (isFirstInteraction) {
-            introMessageDiv.remove();
-            isFirstInteraction = false;
-        }
-
-        if (!audioContext) {
-            audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            await audioContext.resume();
-        }
-
-        if (ws && ws.readyState === WebSocket.CLOSED) {
-            connectWebSocket(); // Reconnect if closed
-        } else if (!ws) {
-            connectWebSocket(); // Initial connection if not established
-        }
-
-        // Handle microphone stream
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         micCtx = new AudioContext({ sampleRate: 16000 });
         micSource = micCtx.createMediaStreamSource(stream);
@@ -253,11 +248,13 @@ document.addEventListener("DOMContentLoaded", () => {
             const pcm16 = floatTo16BitPCM(inputData);
             if (ws && ws.readyState === WebSocket.OPEN) ws.send(pcm16);
         };
-
-        updateState("listening");
     }
 
     function stopRecording() {
+        if (ws) {
+            ws.close();
+            ws = null;
+        }
         if (micProcessor) {
             micProcessor.disconnect();
             micSource.disconnect();
@@ -303,16 +300,15 @@ document.addEventListener("DOMContentLoaded", () => {
     startBtn.addEventListener("click", () => {
         startBtn.style.display = "none";
         stopBtn.style.display = "inline-block";
+        updateState("listening");
         startRecording();
     });
-
     stopBtn.addEventListener("click", () => {
         stopRecording();
         startBtn.style.display = "inline-block";
         stopBtn.style.display = "none";
         updateState("idle");
     });
-
     resetBtn.addEventListener("click", () => {
         stopRecording();
         messagesContainer.innerHTML = "";
@@ -330,7 +326,7 @@ document.addEventListener("DOMContentLoaded", () => {
         localStorage.setItem("geminiKey", geminiKeyInput.value); // NEW: Save Gemini Key
         alert("API keys saved successfully!");
     });
-
+    
     // NEW: Sidebar toggle functionality
     toggleSidebarBtn.addEventListener("click", () => {
         appContainer.classList.toggle("sidebar-closed");
@@ -376,6 +372,5 @@ document.addEventListener("DOMContentLoaded", () => {
         geminiKeyInput.value = localStorage.getItem("geminiKey") || ""; // NEW: Load Gemini Key
         updateState("idle");
         initIntroMessage();
-        connectWebSocket(); // This is the new change: connect on page load
     }
 });
