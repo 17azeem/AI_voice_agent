@@ -81,7 +81,6 @@ def _clean_title(title: str):
         return title[:137] + "..."
     return title
 
-# === Corrected Helpers ===
 async def fetch_ai_ml_news():
     global tavily_client
     if not tavily_client:
@@ -141,8 +140,8 @@ async def fetch_ai_ml_news():
         summary_chunks = []
         try:
             print("DEBUG: Starting LLM stream for news summary.")
-            # 💡 FIX: Use async for with the async generator
-            async for chunk in llm_service.stream(history_for_llm):
+            # FIX: Use asyncio.to_thread to run the synchronous generator
+            for chunk in await asyncio.to_thread(llm_service.stream, history_for_llm):
                 if chunk:
                     summary_chunks.append(chunk)
             print("DEBUG: LLM stream for news summary completed.")
@@ -156,16 +155,16 @@ async def fetch_ai_ml_news():
     except Exception as e:
         print("❌ Tavily error:", e)
         return "Sorry yaar, AI/ML news fetch karne mein gadbad ho gayi.", []
+
 # === Main Class ===
 class AssemblyAIStreamingTranscriber:
     def __init__(self, websocket: WebSocket, loop):
         self.websocket = websocket
         self.loop = loop
         self.murf_ws = None
-        # Chat history is now a list of dictionaries
         self.chat_history: list[dict] = []
         self.murf_chunk_counter = 0
-        self.client = None # AAI client will be set later
+        self.client = None
         self.llm_service = None
         self.tavily_client = None
         self.aai_api_key = None
@@ -174,24 +173,20 @@ class AssemblyAIStreamingTranscriber:
         self.gemini_api_key = None
 
     async def initialize_services(self, config_data: dict):
-        """Initializes services with keys received from the frontend."""
         self.aai_api_key = config_data.get("aai_key")
         self.murf_api_key = config_data.get("murf_key")
         self.tavily_api_key = config_data.get("tavily_key")
         self.gemini_api_key = config_data.get("gemini_key")
 
-        # Initialize LLM Service with Gemini key
         if self.gemini_api_key:
             global llm_service
             llm_service = LLMService(api_key=self.gemini_api_key)
             self.llm_service = llm_service
-            # Persona seed using dictionary format
             self.chat_history.append({"role": "user", "parts": [{"text": PERSONA}]})
             print("DEBUG: Gemini service configured.")
         else:
             print("❌ Gemini API key not provided.")
 
-        # Initialize Tavily client with Tavily key
         if self.tavily_api_key:
             global tavily_client
             tavily_client = TavilyClient(api_key=self.tavily_api_key)
@@ -200,7 +195,6 @@ class AssemblyAIStreamingTranscriber:
         else:
             print("❌ Tavily API key not provided.")
 
-        # Initialize AssemblyAI Streaming Client
         if self.aai_api_key:
             try:
                 self.client = StreamingClient(StreamingClientOptions(api_key=self.aai_api_key))
@@ -240,12 +234,10 @@ class AssemblyAIStreamingTranscriber:
             print("❌ Murf API key is not set.")
             return False
         try:
-            # Check if Murf WS is already connected and not closed
             if self.murf_ws and not self.murf_ws.close:
                 print("DEBUG: Murf WS already open.")
                 return True
             
-            # If not, establish a new connection
             murf_url = f"wss://api.murf.ai/v1/speech/stream-input?api-key={self.murf_api_key}&sample_rate=44100&channel_type=MONO&format=WAV"
             self.murf_ws = await websockets.connect(murf_url)
             print("✅ Murf WebSocket connected.")
@@ -284,7 +276,7 @@ class AssemblyAIStreamingTranscriber:
 
             if any(k in user_text.lower() for k in ["ai news", "ml news", "tech news", "latest ai", "latest ml"]):
                 print("DEBUG: User asked for news. Fetching news.")
-                final_text, links =await fetch_ai_ml_news()
+                final_text, links = await fetch_ai_ml_news()
                 await self.websocket.send_json({
                     "type": "llm_text_final",
                     "text": final_text,
@@ -305,18 +297,17 @@ class AssemblyAIStreamingTranscriber:
                     {"role": "user", "parts": [{"text": user_text}]}
                 ]
                 try:
-                    # FIX: Changed 'for' to 'async for' to correctly handle the async generator
-                    async for chunk in self.llm_service.stream(history_for_llm):
+                    # FIX: Use asyncio.to_thread to run the synchronous generator
+                    for chunk in await asyncio.to_thread(self.llm_service.stream, history_for_llm):
                         if not chunk:
                             continue
                         full_text.append(chunk)
                         try:
                             await self.websocket.send_json({"type": "llm_text", "text": chunk})
-                            # print(f"DEBUG: Sent LLM text chunk to frontend: '{chunk}'")
                         except Exception:
                             pass
                 except Exception as e:
-                    print(f"❌ Error during async for loop: {e}")
+                    print(f"❌ Error during LLM stream: {e}")
                 
                 final_text = enforce_word_limit("".join(full_text).strip(), 100)
                 print("DEBUG: LLM stream complete. Final text length:", len(final_text))
@@ -326,7 +317,6 @@ class AssemblyAIStreamingTranscriber:
                     "links_pending": False
                 })
                 print("DEBUG: Sent LLM final text to frontend.")
-
 
             if tts_ready and final_text:
                 print(f"DEBUG: Sending text to Murf for TTS. Final text length: {len(final_text)}")
@@ -355,16 +345,13 @@ class AssemblyAIStreamingTranscriber:
         finally:
             print("DEBUG: stream_llm_to_murf completed.")
 
-
     async def receive_audio_from_murf(self):
         print("DEBUG: Started receiving audio from Murf.")
         try:
             while True:
-                # Check for messages from Murf
                 try:
                     msg = await asyncio.wait_for(self.murf_ws.recv(), timeout=5.0)
                     if not msg:
-                        # An empty message is a valid end-of-stream signal
                         print("DEBUG: Received empty message from Murf.")
                         break
                     
@@ -401,7 +388,6 @@ class AssemblyAIStreamingTranscriber:
     def stream_audio(self, audio_chunk: bytes):
         if self.client:
             try:
-                # print("DEBUG: Sending audio chunk to AAI.")
                 self.client.stream(audio_chunk)
             except Exception as e:
                 print("❌ Error sending audio:", e)
