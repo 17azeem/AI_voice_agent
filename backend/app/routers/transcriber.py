@@ -230,18 +230,23 @@ class AssemblyAIStreamingTranscriber:
             print("❌ Murf API key is not set.")
             return False
         try:
-            if not self.murf_ws or not getattr(self.murf_ws, "open", False):
-                murf_url = f"wss://api.murf.ai/v1/speech/stream-input?api-key={self.murf_api_key}&sample_rate=44100&channel_type=MONO&format=WAV"
-                self.murf_ws = await websockets.connect(murf_url)
-                await self.murf_ws.send(json.dumps({
-                    "voice_config": {
-                        "voiceId": "en-IN-eashwar",
-                        "style": "Conversational",
-                        "rate": 0,
-                        "pitch": 0,
-                        "variation": 1
-                    }
-                }))
+            # Check if Murf WS is already connected and not closed
+            if self.murf_ws and not self.murf_ws.closed:
+                return True
+            
+            # If not, establish a new connection
+            murf_url = f"wss://api.murf.ai/v1/speech/stream-input?api-key={self.murf_api_key}&sample_rate=44100&channel_type=MONO&format=WAV"
+            self.murf_ws = await websockets.connect(murf_url)
+            
+            await self.murf_ws.send(json.dumps({
+                "voice_config": {
+                    "voiceId": "en-IN-eashwar",
+                    "style": "Conversational",
+                    "rate": 0,
+                    "pitch": 0,
+                    "variation": 1
+                }
+            }))
             return True
         except Exception as e:
             print("❌ Could not init Murf WS:", e)
@@ -321,7 +326,7 @@ class AssemblyAIStreamingTranscriber:
                 try:
                     msg = await asyncio.wait_for(self.murf_ws.recv(), timeout=5.0)
                     data = json.loads(msg)
-                    
+
                     if "audio" in data:
                         self.murf_chunk_counter += 1
                         await self.websocket.send_json({
@@ -338,11 +343,11 @@ class AssemblyAIStreamingTranscriber:
                     # The connection was closed by the Murf server, which signals the end
                     print("Murf connection closed, stream complete.")
                     break
-                
+
             # After the loop breaks, send the final message and reset the counter
             await self.websocket.send_json({"type": "ai_audio", "final": True})
             self.murf_chunk_counter = 0
-    
+
         except Exception as e:
             print("❌ Murf receive error:", e)
         finally:
