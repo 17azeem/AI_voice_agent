@@ -303,15 +303,20 @@ class AssemblyAIStreamingTranscriber:
                 history_for_llm = self.chat_history + [
                     {"role": "user", "parts": [{"text": user_text}]}
                 ]
-                async for chunk in self.llm_service.stream(history_for_llm):
-                    if not chunk:
-                        continue
-                    full_text.append(chunk)
-                    try:
-                        await self.websocket.send_json({"type": "llm_text", "text": chunk})
-                        # print(f"DEBUG: Sent LLM text chunk to frontend: '{chunk}'")
-                    except Exception:
-                        pass
+                try:
+                    # FIX: Changed 'for' to 'async for' to correctly handle the async generator
+                    async for chunk in self.llm_service.stream(history_for_llm):
+                        if not chunk:
+                            continue
+                        full_text.append(chunk)
+                        try:
+                            await self.websocket.send_json({"type": "llm_text", "text": chunk})
+                            # print(f"DEBUG: Sent LLM text chunk to frontend: '{chunk}'")
+                        except Exception:
+                            pass
+                except Exception as e:
+                    print(f"❌ Error during async for loop: {e}")
+                
                 final_text = enforce_word_limit("".join(full_text).strip(), 100)
                 print("DEBUG: LLM stream complete. Final text length:", len(final_text))
                 await self.websocket.send_json({
@@ -350,7 +355,6 @@ class AssemblyAIStreamingTranscriber:
             print("DEBUG: stream_llm_to_murf completed.")
 
 
-    # REVISED: The finally block now checks if the WebSocket is not closed.
     async def receive_audio_from_murf(self):
         print("DEBUG: Started receiving audio from Murf.")
         try:

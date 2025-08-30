@@ -8,7 +8,7 @@ from typing import Generator, Any
 logger = logging.getLogger(__name__)
 
 class LLMService:
-    def __init__(self, api_key: str, model: str = "gemini-1.5-flash"):
+    def __init__(self, api_key: str, model: str = "gemini-pro"):
         """
         Initializes the LLMService with a specific API key.
 
