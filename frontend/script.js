@@ -25,7 +25,7 @@ document.addEventListener("DOMContentLoaded", () => {
     let currentChatId = null;
     let chatHistory = JSON.parse(localStorage.getItem("chatHistory")) || {};
     let currentTheme = localStorage.getItem("theme") || "light";
-    let isTyping = false;
+    let isTyping = false; // Note: This variable isn't used in the provided code, but remains for context.
     let stopGeneration = false;
     let isFirstInteraction = true;
 
@@ -36,7 +36,6 @@ document.addEventListener("DOMContentLoaded", () => {
     let awaitingLinks = false;
     let waveRAF = null;
     let waveActive = false;
-    const SAMPLE_RATE = 44100;
     const WS_URL = "ws://127.0.0.1:8000/ws";
 
     const STATE_GIFS = {
@@ -54,14 +53,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
     let audioQueue = [];
     let isPlaying = false;
+    let speakingSource = null; // New variable to keep track of the current audio source
 
     // === Core Functions ===
     function base64ToPCMFloat32(base64) {
         let binary = atob(base64);
-        const wavHeaderSize = 44;
-        // Check if the received data is a full WAV file with header
-        const isWavFile = binary.length >= wavHeaderSize && binary.startsWith("RIFF");
-        const offset = isWavFile ? wavHeaderSize : 0;
+        const wavHeader = "RIFF";
+
+        // Use startsWith() for a more robust check for the WAV header
+        const isWavFile = binary.startsWith(wavHeader);
+        const offset = isWavFile ? 44 : 0;
         
         const length = binary.length - offset;
         const bytes = new Uint8Array(length);
@@ -78,11 +79,12 @@ document.addEventListener("DOMContentLoaded", () => {
         return float32Array;
     }
 
-    // New function to play the next audio chunk from the queue
+    // Function to play the next audio chunk from the queue
     function playNextChunk() {
         if (isPlaying || audioQueue.length === 0) {
             // If the queue is empty AND we're finished speaking, switch to idle.
-            if (!isSpeaking) {
+            // This is a crucial change to ensure the microphone restarts only after the last sound has played.
+            if (audioQueue.length === 0 && !isSpeaking) {
                 updateState("idle");
                 stopWave();
                 startMicrophone();
@@ -100,15 +102,18 @@ document.addEventListener("DOMContentLoaded", () => {
         
         const buffer = audioContext.createBuffer(1, float32Array.length, audioContext.sampleRate);
         buffer.copyToChannel(float32Array, 0);
+        
         const source = audioContext.createBufferSource();
         source.buffer = buffer;
         source.connect(audioContext.destination);
 
         const now = audioContext.currentTime;
         if (playheadTime < now) playheadTime = now + 0.05;
+        
         source.start(playheadTime);
         playheadTime += buffer.duration;
 
+        // Use the onended event listener for a more reliable way to track when a chunk is done playing.
         source.onended = () => {
             isPlaying = false;
             playNextChunk(); // play the next one in the queue
@@ -173,6 +178,10 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         if (stream) {
             stream.getTracks().forEach(track => track.stop());
+        }
+        // Ensure the speaking audio stops as well when the microphone is stopped
+        if (speakingSource) {
+            speakingSource.stop();
         }
     }
 
