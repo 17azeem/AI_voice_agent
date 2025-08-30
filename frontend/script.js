@@ -42,7 +42,7 @@ document.addEventListener("DOMContentLoaded", () => {
     let waveRAF = null;
     let waveActive = false;
     const SAMPLE_RATE = 44100;
-    const WS_URL = "wss://" + window.location.host + "/ws";
+    const WS_URL = "ws://127.0.0.1:8000/ws";
 
     const STATE_GIFS = {
         idle: "/static/images/robot.gif",
@@ -57,7 +57,10 @@ document.addEventListener("DOMContentLoaded", () => {
     let expectedChunk = 1;
     let chunkBuffer = {};
     let wavHeaderSet = true;
-    let isPlaying = false; // Only one flag is needed now
+
+    // A more robust audio playback queue
+    let audioQueue = [];
+    let isPlaying = false;
 
     // === Core Functions ===
     function base64ToPCMFloat32(base64) {
@@ -79,13 +82,12 @@ document.addEventListener("DOMContentLoaded", () => {
         return float32Array;
     }
 
+    // New function to play the next audio chunk from the queue
     function playNextChunk() {
-        if (chunkBuffer[expectedChunk] && !isPlaying) {
+        if (audioQueue.length > 0 && !isPlaying) {
             isPlaying = true;
-            const b64 = chunkBuffer[expectedChunk];
-            delete chunkBuffer[expectedChunk];
-            const float32Array = base64ToPCMFloat32(b64);
-            
+            const float32Array = audioQueue.shift();
+
             const buffer = audioContext.createBuffer(1, float32Array.length, SAMPLE_RATE);
             buffer.copyToChannel(float32Array, 0);
             const source = audioContext.createBufferSource();
@@ -100,40 +102,39 @@ document.addEventListener("DOMContentLoaded", () => {
             source.start(playheadTime);
             playheadTime += buffer.duration;
 
+            // Set a flag to handle the end of this chunk
             source.onended = () => {
                 isPlaying = false;
-                expectedChunk++;
                 playNextChunk();
             };
         }
     }
 
+    // NEW: Function to manage the audio chunks
     function handleAudioChunk(chunkId, base64Audio, isFinal) {
         if (base64Audio) {
+            // New logic: stop the microphone right before playing the first audio chunk
             if (expectedChunk === 1) {
                 stopMicrophone();
             }
             updateState("speaking");
             startWave();
-            chunkBuffer[chunkId] = base64Audio;
-            
-            // Only play if we are not already playing
-            if (!isPlaying) {
-                playNextChunk();
+            const float32Array = base64ToPCMFloat32(base64Audio);
+            if (float32Array) {
+                audioQueue.push(float32Array);
+                if (!isPlaying) {
+                    playNextChunk(); // Start playing if nothing is currently playing
+                }
             }
+            expectedChunk++; // Increment to handle the next chunk
         }
         if (isFinal) {
-            // Use setInterval to wait for all chunks to be played
-            const checkAndRestart = setInterval(() => {
-                // If the chunkBuffer is empty and we're not currently playing a chunk
-                if (Object.keys(chunkBuffer).length === 0 && !isPlaying) {
-                    clearInterval(checkAndRestart);
-                    expectedChunk = 1;
-                    wavHeaderSet = true;
-                    updateState("idle");
-                    startMicrophone();
-                }
-            }, 100);
+            expectedChunk = 1;
+            chunkBuffer = {};
+            wavHeaderSet = true;
+            updateState("idle");
+            // New logic: restart the microphone after the final audio chunk is processed
+            startMicrophone();
         }
     }
 
@@ -148,6 +149,7 @@ document.addEventListener("DOMContentLoaded", () => {
         return buffer;
     }
 
+    // NEW: Dedicated function to stop microphone input
     function stopMicrophone() {
         if (micProcessor) {
             micProcessor.disconnect();
@@ -159,6 +161,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
+    // NEW: Dedicated function to start microphone input
     async function startMicrophone() {
         try {
             stream = await navigator.mediaDevices.getUserMedia({ audio: true });
