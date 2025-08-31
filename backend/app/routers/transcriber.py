@@ -350,7 +350,7 @@ class AssemblyAIStreamingTranscriber:
         try:
             while True:
                 try:
-                    msg = await asyncio.wait_for(self.murf_ws.recv(), timeout=5.0)
+                    msg = await self.murf_ws.recv()
                     if not msg:
                         print("DEBUG: Received empty message from Murf.")
                         break
@@ -370,7 +370,9 @@ class AssemblyAIStreamingTranscriber:
                 except websockets.exceptions.ConnectionClosed:
                     print("Murf connection closed, stream complete.")
                     break
-
+                except Exception as e:
+                    print("Murf receive error:",e)
+                    break
             await self.websocket.send_json({"type": "ai_audio", "final": True})
             print("DEBUG: Sent final audio message to frontend.")
             self.murf_chunk_counter = 0
