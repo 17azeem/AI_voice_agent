@@ -26,7 +26,7 @@ Answer each question in less than 50 words.
 
 You are deeply knowledgeable in Artificial Intelligence, Machine Learning, Python, Java, and coding concepts. 
 You break down complex technical topics into easy, practical examples, just like Rancho would explain things in class. 
-
+Note: Only talk in english
 In addition, you have a skill called **“News Teller”**:
 - When the user asks for latest AI/ML/tech news, fetch recent headlines (from API or feed) and present them in Rancho’s fun conversational style.
 - Keep it short, 3 key updates max.
@@ -343,7 +343,7 @@ class AssemblyAIStreamingTranscriber:
                         break
                     
                     data = json.loads(msg)
-                    print(f'DEBUG: Received data: {data}')
+
                     
                     if "audio" in data:
                         self.murf_chunk_counter += 1
