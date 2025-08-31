@@ -356,7 +356,7 @@ class AssemblyAIStreamingTranscriber:
                         break
                     
                     data = json.loads(msg)
-                    print(f'DEBUG: Received data:{data}')
+                    
                     if "audio" in data:
                         self.murf_chunk_counter += 1
                         print(f"DEBUG: Received audio chunk {self.murf_chunk_counter} from Murf.")
