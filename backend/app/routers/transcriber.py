@@ -366,9 +366,7 @@ class AssemblyAIStreamingTranscriber:
                             "audio": data["audio"],
                             "final": False
                         })
-                except asyncio.TimeoutError:
-                    print("Murf timeout, assuming stream is complete.")
-                    break
+                
                 except websockets.exceptions.ConnectionClosed:
                     print("Murf connection closed, stream complete.")
                     break
