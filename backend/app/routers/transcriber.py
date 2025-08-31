@@ -204,7 +204,7 @@ class AssemblyAIStreamingTranscriber:
             print("❌ Murf API key is not set.")
             return False
         try:
-            if self.murf_ws and not self.murf_ws.closed:
+            if self.murf_ws and not self.murf_ws.close:
                 print("DEBUG: Murf WS already open.")
                 return True
             
@@ -377,7 +377,7 @@ class AssemblyAIStreamingTranscriber:
         except Exception as e:
             print(f"❌ Murf receive error: {e}")
         finally:
-            if self.murf_ws and not self.murf_ws.closed:
+            if self.murf_ws and not self.murf_ws.close:
                 print("DEBUG: Closing Murf WebSocket.")
                 await self.murf_ws.close()
             self.murf_ws = None
@@ -399,7 +399,7 @@ class AssemblyAIStreamingTranscriber:
         print("❌ Streaming error:", error)
 
     async def close_murf(self):
-        if self.murf_ws and not self.murf_ws.closed:
+        if self.murf_ws and not self.murf_ws.close:
             await self.murf_ws.close()
             self.murf_ws = None
             print("DEBUG: Murf WS closed.")
