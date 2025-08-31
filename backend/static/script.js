@@ -44,6 +44,9 @@ document.addEventListener("DOMContentLoaded", () => {
     const SAMPLE_RATE = 44100;
     const WS_URL = "wss://" + window.location.host + "/ws";
 
+    // New flag to control microphone streaming
+    let isAILockingMic = false;
+
     const STATE_GIFS = {
         idle: "/static/images/robot.gif",
         listening: "/static/images/listening.gif",
@@ -99,7 +102,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (base64Audio) {
             // New logic: stop the microphone right before playing the first audio chunk
             if (expectedChunk === 1) {
-                stopMicrophone(); 
+                isAILockingMic = true; 
             }
             updateState("speaking");
             startWave();
@@ -118,7 +121,7 @@ document.addEventListener("DOMContentLoaded", () => {
             wavHeaderSet = true;
             updateState("idle");
             // New logic: restart the microphone after the final audio chunk is processed
-            startMicrophone(); 
+            isAILockingMic = false;
         }
     }
 
@@ -143,11 +146,16 @@ document.addEventListener("DOMContentLoaded", () => {
         if (stream) {
             stream.getTracks().forEach(track => track.stop());
         }
+        isAILockingMic = false;
     }
 
     // NEW: Dedicated function to start microphone input
     async function startMicrophone() {
         try {
+            if (micProcessor) {
+                console.log("Microphone is already running. Skipping.");
+                return;
+            }
             if (!audioContext) {
                 audioContext = new (window.AudioContext || window.webkitAudioContext)();
                 await audioContext.resume();
@@ -161,7 +169,7 @@ document.addEventListener("DOMContentLoaded", () => {
             micProcessor.onaudioprocess = (e) => {
                 const inputData = e.inputBuffer.getChannelData(0);
                 const pcm16 = floatTo16BitPCM(inputData);
-                if (ws && ws.readyState === WebSocket.OPEN) ws.send(pcm16);
+                if (ws && ws.readyState === WebSocket.OPEN && !isAILockingMic) ws.send(pcm16);
             };
             updateState("listening");
         } catch (err) {
@@ -246,7 +254,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 awaitingLinks = false;
                 addChatMessage("user", msg.text);
                 updateState("thinking");
-                stopMicrophone(); // Ensure microphone is off while thinking
+                isAILockingMic = true;
                 startWave();
             } else if (msg.type === "llm_text") {
                 aiAccumulatedText += msg.text;
@@ -255,6 +263,9 @@ document.addEventListener("DOMContentLoaded", () => {
                 aiAccumulatedText = msg.text || aiAccumulatedText;
                 addOrUpdateAIMessage(aiAccumulatedText, true);
                 awaitingLinks = msg.links_pending;
+                if (!awaitingLinks) {
+                    isAILockingMic = false;
+                }
             } else if (msg.type === "related_links") {
                 console.log("🔗 Related links received:", msg.links);
                 let linksHtml = "<b>📰 Related News:</b><br>";
@@ -264,6 +275,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 addChatMessage("ai", linksHtml, true);
                 awaitingLinks = false;
                 currentAIBubble = null;
+                isAILockingMic = false;
             } else if (msg.type === "ai_audio") {
                 handleAudioChunk(msg.chunk_id, msg.audio, msg.final);
             }
@@ -281,8 +293,8 @@ document.addEventListener("DOMContentLoaded", () => {
         } else if (!ws) {
             connectWebSocket(); // Initial connection if not established
         }
-
-        await startMicrophone(); // Start the microphone
+        
+        await startMicrophone(); // Start the microphone only if not already running
     }
 
     function stopRecording() {
