@@ -60,27 +60,6 @@ def enforce_word_limit(text: str, max_words: int = 100) -> str:
     print(f"DEBUG: Enforcing word limit. Original words: {len(words)}, Final words: {len(limited_text.split())}")
     return limited_text
 
-def _extract_url_from_item(item: dict):
-    """Try a set of common keys to extract a usable URL."""
-    for key in ("url", "link", "href", "canonical_url", "source_url"):
-        val = item.get(key)
-        if val and isinstance(val, str) and val.strip():
-            return val.strip()
-    if isinstance(item.get("meta"), dict):
-        for key in ("url", "link", "href"):
-            v = item["meta"].get(key)
-            if v:
-                return v
-    return None
-
-def _clean_title(title: str):
-    if not title:
-        return "News"
-    title = re.sub(r"http\S+", "", title).strip()
-    if len(title) > 140:
-        return title[:137] + "..."
-    return title
-
 async def fetch_ai_ml_news():
     global tavily_client
     if not tavily_client:
@@ -106,15 +85,8 @@ async def fetch_ai_ml_news():
         links = []
         seen_urls = set()
         for item in results:
-            url = _extract_url_from_item(item)
-            title = _clean_title(item.get("title") or item.get("headline") or item.get("short_title") or "")
-            if not url:
-                for v in item.values():
-                    if isinstance(v, str):
-                        m = re.search(r"https?://\S+", v)
-                        if m:
-                            url = m.group(0).rstrip(".,)")
-                            break
+            url = item.get("url")
+            title = re.sub(r"http\S+", "", item.get("title", "")).strip()
             if url and url not in seen_urls:
                 seen_urls.add(url)
                 links.append({"title": title or "News", "url": url})
@@ -122,9 +94,7 @@ async def fetch_ai_ml_news():
                 break
         print(f"DEBUG: Found {len(links)} news articles.")
         
-        titles = [l["title"] for l in links] if links else [
-            _clean_title(item.get("title", "")) for item in results[:3]
-        ]
+        titles = [l["title"] for l in links] if links else []
         combined_news = " ".join(titles)
         print(f"DEBUG: Combined news titles for LLM: {combined_news[:50]}...")
 
@@ -140,7 +110,6 @@ async def fetch_ai_ml_news():
         summary_chunks = []
         try:
             print("DEBUG: Starting LLM stream for news summary.")
-            # FIX: Use asyncio.to_thread to run the synchronous generator
             for chunk in await asyncio.to_thread(llm_service.stream, history_for_llm):
                 if chunk:
                     summary_chunks.append(chunk)
@@ -171,6 +140,7 @@ class AssemblyAIStreamingTranscriber:
         self.murf_api_key = None
         self.tavily_api_key = None
         self.gemini_api_key = None
+        self.murf_context_id = None # Store Murf context_id
 
     async def initialize_services(self, config_data: dict):
         self.aai_api_key = config_data.get("aai_key")
@@ -234,28 +204,35 @@ class AssemblyAIStreamingTranscriber:
             print("❌ Murf API key is not set.")
             return False
         try:
-            if self.murf_ws and not self.murf_ws.close:
+            if self.murf_ws and not self.murf_ws.closed:
                 print("DEBUG: Murf WS already open.")
                 return True
             
-            murf_url = f"wss://api.murf.ai/v1/speech/stream-input?api-key={self.murf_api_key}&sample_rate=44100&channel_type=MONO&format=WAV"
+            murf_url = f"wss://api.murf.ai/v1/speech/stream-input?api-key={self.murf_api_key}"
             self.murf_ws = await websockets.connect(murf_url)
             print("✅ Murf WebSocket connected.")
             
+            # Use a new context ID for each session
+            self.murf_context_id = f"rancho-session-{os.urandom(16).hex()}"
             await self.murf_ws.send(json.dumps({
                 "voice_config": {
                     "voiceId": "en-IN-eashwar",
                     "style": "Conversational",
                     "rate": 0,
                     "pitch": 0,
-                    "variation": 1
-                }
+                    "variation": 1,
+                    "sampleRate": 44100,
+                    "format": "WAV",
+                    "channelType": "MONO",
+                },
+                "context_id": self.murf_context_id
             }))
-            print("DEBUG: Murf voice config sent.")
+            print("DEBUG: Murf voice config and context_id sent.")
             return True
         except Exception as e:
             print(f"❌ Could not init Murf WS: {e}")
             self.murf_ws = None
+            self.murf_context_id = None
             return False
 
     async def stream_llm_to_murf(self, user_text: str):
@@ -297,7 +274,6 @@ class AssemblyAIStreamingTranscriber:
                     {"role": "user", "parts": [{"text": user_text}]}
                 ]
                 try:
-                    # FIX: Use asyncio.to_thread to run the synchronous generator
                     for chunk in await asyncio.to_thread(self.llm_service.stream, history_for_llm):
                         if not chunk:
                             continue
@@ -320,10 +296,21 @@ class AssemblyAIStreamingTranscriber:
 
             if tts_ready and final_text:
                 print(f"DEBUG: Sending text to Murf for TTS. Final text length: {len(final_text)}")
-                for tts_chunk in split_into_chunks(clean_text_for_tts(final_text)):
-                    print(f"DEBUG: Sending TTS chunk to Murf: '{tts_chunk}'")
-                    await self.murf_ws.send(json.dumps({"text": tts_chunk, "end": False}))
-                await self.murf_ws.send(json.dumps({"text": "", "end": True}))
+                tts_chunks = split_into_chunks(clean_text_for_tts(final_text))
+                for i, tts_chunk in enumerate(tts_chunks):
+                    print(f"DEBUG: Sending TTS chunk {i+1} to Murf: '{tts_chunk}'")
+                    # Send each chunk with the context_id
+                    await self.murf_ws.send(json.dumps({
+                        "text": tts_chunk, 
+                        "end": False,
+                        "context_id": self.murf_context_id
+                    }))
+                # Send a final empty message to signal the end of the TTS stream
+                await self.murf_ws.send(json.dumps({
+                    "text": "", 
+                    "end": True, 
+                    "context_id": self.murf_context_id
+                }))
                 print("DEBUG: Sent final TTS chunk to Murf.")
 
             if tts_task:
@@ -352,10 +339,11 @@ class AssemblyAIStreamingTranscriber:
                 try:
                     msg = await asyncio.wait_for(self.murf_ws.recv(), timeout=60.0)
                     if not msg:
-                        print("DEBUG: Received empty message from Murf.")
+                        print("DEBUG: Received empty message from Murf, assuming stream is complete.")
                         break
                     
                     data = json.loads(msg)
+                    print(f'DEBUG: Received data: {data}')
                     
                     if "audio" in data:
                         self.murf_chunk_counter += 1
@@ -366,28 +354,34 @@ class AssemblyAIStreamingTranscriber:
                             "audio": data["audio"],
                             "final": False
                         })
-                    if data.get("final"):
-                        print("DEBUG: Received final message from Murf.Stream Complete")
+                    
+                    # FIX: Use the correct key from Murf docs and add a safety check for 'final'
+                    if data.get("isFinalAudio") or data.get("final"):
+                        print("DEBUG: Received final message from Murf. Stream Complete")
                         break
+                
                 except asyncio.TimeoutError:
-                    print("Murf timeout after 60s")
+                    print("Murf timeout after 60s, assuming stream is complete.")
+                    break
                 except websockets.exceptions.ConnectionClosed:
                     print("Murf connection closed, stream complete.")
                     break
                 except Exception as e:
-                    print("Murf receive error:",e)
+                    print(f"Murf receive error: {e}")
                     break
+            
             await self.websocket.send_json({"type": "ai_audio", "final": True})
             print("DEBUG: Sent final audio message to frontend.")
             self.murf_chunk_counter = 0
 
         except Exception as e:
-            print("❌ Murf receive error:", e)
+            print(f"❌ Murf receive error: {e}")
         finally:
-            if self.murf_ws and not self.murf_ws.close:
+            if self.murf_ws and not self.murf_ws.closed:
                 print("DEBUG: Closing Murf WebSocket.")
                 await self.murf_ws.close()
             self.murf_ws = None
+            print("DEBUG: Murf audio receive task completed.")
             
     def stream_audio(self, audio_chunk: bytes):
         if self.client:
@@ -405,7 +399,7 @@ class AssemblyAIStreamingTranscriber:
         print("❌ Streaming error:", error)
 
     async def close_murf(self):
-        if self.murf_ws and not self.murf_ws.close:
+        if self.murf_ws and not self.murf_ws.closed:
             await self.murf_ws.close()
             self.murf_ws = None
             print("DEBUG: Murf WS closed.")

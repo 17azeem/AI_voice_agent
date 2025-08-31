@@ -99,31 +99,22 @@ document.addEventListener("DOMContentLoaded", () => {
             source.buffer = buffer;
             source.connect(audioContext.destination);
 
-            let now = audioContext.currentTime;
-            let scheduledTime = now;
-            
-            // Check if a previous chunk is still playing
-            if (source.buffer.duration > 0 && source.buffer.duration < now - scheduledTime) {
-                scheduledTime = now;
-            } else {
-                scheduledTime = now + 0.05;
-            }
-            
             source.onended = () => {
                 isPlaying = false;
                 if (audioQueue.length > 0) {
                     playNextChunk();
                 } else if (!isSpeaking) {
-                    console.log("DEBUG: Audio queue empty and speaking finished. Restarting microphone.");
-                    startRecording();
+                    // All audio chunks have been played, and no more are coming
+                    console.log("DEBUG: All chunks played and speaking finished. Restarting microphone.");
+                    updateState("idle");
+                    // Optionally restart recording here, or allow the user to click start again
                 }
             };
             
-            source.start(scheduledTime);
+            source.start(audioContext.currentTime);
             updateState("speaking");
             startWave();
         } else if (isSpeaking && audioQueue.length === 0) {
-            // Wait for the next chunk
             console.log("DEBUG: Waiting for next audio chunk. Queue is empty.");
         } else if (!isSpeaking && audioQueue.length === 0) {
             console.log("DEBUG: Audio stream and queue finished. Setting to idle.");
@@ -136,8 +127,8 @@ document.addEventListener("DOMContentLoaded", () => {
         if (isFinal) {
             isSpeaking = false;
             console.log("DEBUG: Received final audio message.");
-            if (audioQueue.length === 0) {
-                // All chunks played and stream is final, now safe to stop playback and restart mic
+            // Wait for the audio queue to empty before signaling completion
+            if (audioQueue.length === 0 && !isPlaying) {
                 console.log("DEBUG: Final audio message received and queue is empty. Transition to idle/listening.");
                 updateState("idle");
             }
@@ -297,7 +288,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function stopRecording() {
-        if (ws) {
+        if (ws && ws.readyState === WebSocket.OPEN) {
             ws.close();
             ws = null;
         }
