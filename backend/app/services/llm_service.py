@@ -3,43 +3,57 @@ from google.generativeai.types import GenerationConfig
 from google.generativeai import GenerativeModel
 from google.api_core.exceptions import ResourceExhausted
 import google.generativeai as genai
-from typing import Generator, Any
+from typing import Generator
 
 logger = logging.getLogger(__name__)
 
 class LLMService:
-    def __init__(self, api_key: str, model: str = "gemini-pro"):
+    def __init__(self, api_key: str, model: str = "gemini-1.5-flash-latest"):
         if not api_key:
             raise ValueError("API key for LLMService cannot be None or empty.")
-        
+
         genai.configure(api_key=api_key)
-        self.model = model
+
         self.client = GenerativeModel(
-            model_name="models/gemini-1.5-flash-latest",
+            model_name=model,
             generation_config=GenerationConfig(temperature=0.5)
         )
+
         self.system_prompt = "You are a helpful AI assistant. Answer concisely and accurately."
 
-    # FIX: This method must be a synchronous generator.
     def stream(self, history: list) -> Generator[str, None, None]:
-        contents = [{
-            "role": "user",
-            "parts": [{"text": self.system_prompt}]
-        }] + history[-8:]
-        
+        messages = [
+            {
+                "role": "system",
+                "parts": [{"text": self.system_prompt}],
+            }
+        ] + history[-8:]  # keep last 8 messages
+
         try:
-            # The underlying library returns a synchronous generator here.
-            stream = self.client.generate_content(
-                contents=contents,
-                stream=True,
+            response_stream = self.client.generate_content(
+                contents=messages,
+                stream=True
             )
-            # FIX: Use a simple 'for' loop to iterate over the synchronous stream.
-            for chunk in stream:
-                if hasattr(chunk, 'text'):
-                    yield chunk.text
+
+            for chunk in response_stream:
+                try:
+                    # Extract the valid generated text
+                    text = (
+                        chunk.candidates[0]
+                            .content.parts[0]
+                            .text
+                    )
+                    if text:
+                        yield text
+
+                except Exception:
+                    # Some chunks may not have text — skip silently
+                    continue
+
         except ResourceExhausted:
-            logger.warning("Resource Exhausted. Retrying after a short break.")
-            yield "Sorry, there's been an issue. Please try again in a few moments."
+            logger.warning("Resource exhausted error.")
+            yield "Sorry, resources exceeded. Try again later."
+
         except Exception as e:
             logger.error("LLM streaming error: %s", e, exc_info=True)
             yield "I ran into a problem. Can you rephrase that?"
