@@ -8,7 +8,7 @@ from typing import Generator
 logger = logging.getLogger(__name__)
 
 class LLMService:
-    def __init__(self, api_key: str, model: str = "gemini-1.5-flash-latest"):
+    def __init__(self, api_key: str, model: str = "gemini-1.5-flash"):
         if not api_key:
             raise ValueError("API key for LLMService cannot be None or empty.")
 
